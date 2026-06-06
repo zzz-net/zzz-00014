@@ -12,6 +12,7 @@ import {
   Play,
   ShieldCheck,
   Home,
+  Shield,
 } from 'lucide-react'
 import { useAppStore } from '@/store'
 import { Button } from './common/Button'
@@ -23,6 +24,7 @@ import {
   QualityControlRules,
   DEFAULT_QC_RULES,
   RuleVersion,
+  PreCheckConfig,
 } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -65,6 +67,8 @@ export function QCRuleConfig() {
   const applyRuleVersion = useAppStore(s => s.applyRuleVersion)
   const deleteRuleVersion = useAppStore(s => s.deleteRuleVersion)
   const previewRuleChange = useAppStore(s => s.previewRuleChange)
+  const preCheckConfig = useAppStore(s => s.preCheckConfig)
+  const setPreCheckConfig = useAppStore(s => s.setPreCheckConfig)
 
   const [draftRules, setDraftRules] = useState<QualityControlRules>({ ...qcRules })
   const [versionName, setVersionName] = useState('')
@@ -72,6 +76,7 @@ export function QCRuleConfig() {
   const [showPreview, setShowPreview] = useState(false)
   const [previewResult, setPreviewResult] = useState<ReturnType<typeof previewRuleChange> | null>(null)
   const [showApplyConfirm, setShowApplyConfirm] = useState<string | null>(null)
+  const [draftPreCheck, setDraftPreCheck] = useState<PreCheckConfig>({ ...preCheckConfig })
 
   const isDirty = useMemo(() => {
     return JSON.stringify(draftRules) !== JSON.stringify(qcRules)
@@ -293,6 +298,64 @@ export function QCRuleConfig() {
                     未选择任何类型，所有新识别异常的初始状态都将是"待处理"
                   </p>
                 )}
+              </div>
+
+              <div className="bg-indigo-50 rounded-lg p-4 space-y-3">
+                <h4 className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+                  <Shield className="w-4 h-4 text-indigo-600" />
+                  数据预检配置
+                </h4>
+                <p className="text-xs text-gray-500">
+                  导入 CSV 前先进行数据质量检查，发现问题再决定是否导入。
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1.5">最多展示错误/警告数</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={10}
+                        max={1000}
+                        step={10}
+                        value={draftPreCheck.maxDisplayIssues}
+                        onChange={e => {
+                          const v = Math.max(10, Math.min(1000, Number(e.target.value) || 100))
+                          setDraftPreCheck({ ...draftPreCheck, maxDisplayIssues: v })
+                          setPreCheckConfig({ maxDisplayIssues: v })
+                        }}
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                      />
+                      <span className="text-xs text-gray-500">条</span>
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">超出部分可通过缩小筛选范围查看</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1.5">是否允许警告继续导入</label>
+                    <div className="flex items-center gap-3 pt-1">
+                      <label className="inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={draftPreCheck.allowWarningContinue}
+                          onChange={e => {
+                            const v = e.target.checked
+                            setDraftPreCheck({ ...draftPreCheck, allowWarningContinue: v })
+                            setPreCheckConfig({ allowWarningContinue: v })
+                          }}
+                          className="sr-only peer"
+                        />
+                        <div className="relative w-11 h-6 bg-gray-200 rounded-full peer peer-checked:bg-indigo-600 transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-5"></div>
+                      </label>
+                      <span className="text-sm text-gray-700">
+                        {draftPreCheck.allowWarningContinue ? '开启：有警告可继续' : '关闭：有警告即拦截'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">错误级别始终阻止导入</p>
+                  </div>
+                </div>
+                <div className="text-xs text-indigo-600 flex items-center gap-1 pt-1">
+                  <CheckCircle className="w-3 h-3" />
+                  配置修改后立即生效并持久化保存（刷新页面后保留）
+                </div>
               </div>
             </div>
           </div>

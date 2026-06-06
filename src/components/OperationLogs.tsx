@@ -29,6 +29,11 @@ const ActionColor: Record<LogActionType, string> = {
   [LogActionType.EXPORT]: 'bg-green-100 text-green-700 border-green-200',
   [LogActionType.REVIEW_STATUS_CHANGE]: 'bg-rose-100 text-rose-700 border-rose-200',
   [LogActionType.RESET]: 'bg-red-100 text-red-700 border-red-200',
+  [LogActionType.PRE_CHECK]: 'bg-indigo-100 text-indigo-700 border-indigo-200',
+  [LogActionType.PRE_CHECK_IMPORT_PASS]: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  [LogActionType.PRE_CHECK_IMPORT_WARN]: 'bg-yellow-100 text-yellow-700 border-yellow-200',
+  [LogActionType.PRE_CHECK_CANCEL]: 'bg-gray-100 text-gray-700 border-gray-200',
+  [LogActionType.PRE_CHECK_EXPORT]: 'bg-teal-100 text-teal-700 border-teal-200',
 }
 
 function formatDate(iso: string) {

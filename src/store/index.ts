@@ -7,21 +7,30 @@ import {
   DataType,
   DEFAULT_LOG_FILTERS,
   DEFAULT_QC_RULES,
+  DEFAULT_PRE_CHECK_CONFIG,
   Filters,
   Followup,
   ImportResult,
   LogActionType,
   LogFilters,
   OperationLog,
+  PreCheckConfig,
+  PreCheckFilterDataType,
+  PreCheckFilterSeverity,
+  PreCheckIssue,
+  PreCheckResult,
   QualityControlRules,
   Resident,
   ReviewStatus,
   RuleVersion,
   UnregisteredRecord,
+  PreCheckIssueCodeLabels,
+  DataTypeLabels,
 } from '@/types'
 import { parseCSV, generateCSV, downloadFile } from '@/utils/csv'
 import { validateData } from '@/utils/validator'
 import { detectAnomalies, calculateRuleDiffPreview } from '@/utils/anomaly'
+import { preCheckResidents, preCheckAppointments, preCheckFollowups, buildPreCheckResult } from '@/utils/precheck'
 import { computeHash, generateId, todayStr } from '@/utils/helpers'
 
 interface AppState {
@@ -39,7 +48,21 @@ interface AppState {
   operationLogs: OperationLog[]
   logFilters: LogFilters
   currentOperator: string
+  preCheckConfig: PreCheckConfig
+  preCheckResult: PreCheckResult | null
+  preCheckPendingFile: { type: DataType; text: string; fileName: string; hash: string } | null
+  preCheckFilterSeverity: PreCheckFilterSeverity
+  preCheckFilterDataType: PreCheckFilterDataType
+  preCheckFilterSearch: string
   importData: (type: DataType, fileText: string, fileName: string) => Promise<ImportResult>
+  runPreCheck: (type: DataType, fileText: string, fileName: string) => Promise<PreCheckResult>
+  confirmImportFromPreCheck: (mode: 'all' | 'validOnly') => Promise<ImportResult | null>
+  cancelPreCheck: () => void
+  clearPreCheckResult: () => void
+  setPreCheckConfig: (config: Partial<PreCheckConfig>) => void
+  setPreCheckFilter: (filter: { severity?: PreCheckFilterSeverity; dataType?: PreCheckFilterDataType; search?: string }) => void
+  getFilteredPreCheckIssues: () => PreCheckIssue[]
+  exportPreCheckReport: (format: 'csv' | 'json') => void
   updateAnomaly: (id: string, status?: ReviewStatus, remark?: string, handler?: string) => void
   setFilters: (filters: Partial<Filters>) => void
   resetFilters: () => void
@@ -96,6 +119,12 @@ export const useAppStore = create<AppState>()(
       operationLogs: [],
       logFilters: { ...DEFAULT_LOG_FILTERS },
       currentOperator: '未登录用户',
+      preCheckConfig: { ...DEFAULT_PRE_CHECK_CONFIG },
+      preCheckResult: null,
+      preCheckPendingFile: null,
+      preCheckFilterSeverity: 'all',
+      preCheckFilterDataType: 'all',
+      preCheckFilterSearch: '',
 
       addLog: (actionType, description, details = {}) => {
         const log: OperationLog = {
@@ -107,6 +136,332 @@ export const useAppStore = create<AppState>()(
           details,
         }
         set(s => ({ operationLogs: [log, ...s.operationLogs].slice(0, 5000) }))
+      },
+
+      runPreCheck: async (type, fileText, fileName) => {
+        const hash = await computeHash(fileText)
+        const currentHash = get().importedFileHashes[type]
+
+        const residentIds = new Set(get().residents.map(r => r.residentId))
+
+        let residentResult = null
+        let appointmentResult = null
+        let followupResult = null
+
+        const prevResult = get().preCheckResult
+        if (prevResult) {
+          residentResult = prevResult.dataTypes.residents
+          appointmentResult = prevResult.dataTypes.appointments
+          followupResult = prevResult.dataTypes.followups
+        }
+
+        if (type === 'residents') {
+          residentResult = preCheckResidents(fileText, fileName)
+        } else if (type === 'appointments') {
+          const allResidentIds = new Set(residentIds)
+          if (residentResult) {
+            residentResult.parsedData.forEach(row => {
+              if (row['居民编号']) allResidentIds.add(row['居民编号'].trim())
+            })
+          }
+          appointmentResult = preCheckAppointments(fileText, fileName, allResidentIds)
+        } else if (type === 'followups') {
+          const allResidentIds = new Set(residentIds)
+          if (residentResult) {
+            residentResult.parsedData.forEach(row => {
+              if (row['居民编号']) allResidentIds.add(row['居民编号'].trim())
+            })
+          }
+          followupResult = preCheckFollowups(fileText, fileName, allResidentIds)
+        }
+
+        const result = buildPreCheckResult(residentResult, appointmentResult, followupResult)
+
+        set({
+          preCheckResult: result,
+          preCheckPendingFile: { type, text: fileText, fileName, hash },
+          preCheckFilterSeverity: 'all',
+          preCheckFilterDataType: 'all',
+          preCheckFilterSearch: '',
+        })
+
+        get().addLog(LogActionType.PRE_CHECK, `预检${DataTypeLabels[type]}：${fileName}`, {
+          type,
+          fileName,
+          totalIssues: result.overall.totalIssues,
+          totalErrors: result.overall.totalErrors,
+          totalWarnings: result.overall.totalWarnings,
+        })
+
+        if (hash === currentHash && currentHash !== '') {
+          const dupResult: ImportResult = {
+            success: false,
+            isDuplicate: true,
+            message: '该文件已导入过，无需重复导入',
+            errors: [],
+            importedCount: 0,
+          }
+          set(s => ({ lastImportResult: { ...s.lastImportResult, [type]: dupResult } }))
+          get().addLog(LogActionType.IMPORT, `重复导入${type}：${fileName}`, { type, fileName, result: dupResult })
+        }
+
+        return result
+      },
+
+      confirmImportFromPreCheck: async (mode) => {
+        const pending = get().preCheckPendingFile
+        const preCheckResult = get().preCheckResult
+        if (!pending || !preCheckResult) return null
+
+        const { type, fileName, hash } = pending
+        const currentHash = get().importedFileHashes[type]
+
+        if (hash === currentHash && currentHash !== '') {
+          const result: ImportResult = {
+            success: false,
+            isDuplicate: true,
+            message: '该文件已导入过，无需重复导入',
+            errors: [],
+            importedCount: 0,
+          }
+          set(s => ({ lastImportResult: { ...s.lastImportResult, [type]: result } }))
+          get().addLog(LogActionType.IMPORT, `重复导入${type}：${fileName}`, { type, fileName, result })
+          set({ preCheckPendingFile: null })
+          return result
+        }
+
+        const typeResult = preCheckResult.dataTypes[type]
+        if (!typeResult) return null
+
+        const hasErrors = typeResult.errorCount > 0
+        const config = get().preCheckConfig
+
+        if (hasErrors) {
+          const result: ImportResult = {
+            success: false,
+            isDuplicate: false,
+            message: `预检未通过，存在 ${typeResult.errorCount} 个错误，旧数据未被覆盖`,
+            errors: typeResult.issues.filter(i => i.severity === 'error').slice(0, 10).map(i => ({
+              row: i.row,
+              field: i.field,
+              message: i.message,
+              value: i.value,
+            })),
+            importedCount: 0,
+          }
+          set(s => ({ lastImportResult: { ...s.lastImportResult, [type]: result } }))
+          get().addLog(LogActionType.PRE_CHECK_CANCEL, `预检未通过取消导入${type}：${fileName}`, {
+            type,
+            fileName,
+            errorCount: typeResult.errorCount,
+          })
+          set({ preCheckPendingFile: null, preCheckResult: null })
+          return result
+        }
+
+        if (!config.allowWarningContinue && typeResult.warningCount > 0 && mode !== 'validOnly') {
+          const result: ImportResult = {
+            success: false,
+            isDuplicate: false,
+            message: `存在 ${typeResult.warningCount} 个警告，系统配置不允许警告继续导入`,
+            errors: typeResult.issues.filter(i => i.severity === 'warning').slice(0, 10).map(i => ({
+              row: i.row,
+              field: i.field,
+              message: i.message,
+              value: i.value,
+            })),
+            importedCount: 0,
+          }
+          set(s => ({ lastImportResult: { ...s.lastImportResult, [type]: result } }))
+          set({ preCheckPendingFile: null, preCheckResult: null })
+          return result
+        }
+
+        let rows = typeResult.parsedData
+        if (mode === 'validOnly') {
+          rows = rows.filter((_, idx) => !typeResult.invalidRowIndices.includes(idx))
+        }
+
+        if (rows.length === 0) {
+          const result: ImportResult = {
+            success: false,
+            isDuplicate: false,
+            message: mode === 'validOnly' ? '没有可导入的有效数据行' : '文件为空或格式错误',
+            errors: [],
+            importedCount: 0,
+          }
+          set(s => ({ lastImportResult: { ...s.lastImportResult, [type]: result } }))
+          set({ preCheckPendingFile: null, preCheckResult: null })
+          return result
+        }
+
+        const validation = validateData(type, rows)
+        const data = validation.data as Resident[] | Appointment[] | Followup[]
+
+        set(s => {
+          const newState: Partial<AppState> = {
+            importedFileHashes: { ...s.importedFileHashes, [type]: hash },
+            lastImportResult: {
+              ...s.lastImportResult,
+              [type]: {
+                success: true,
+                isDuplicate: false,
+                message: `成功导入 ${data.length} 条记录${mode === 'validOnly' ? `（跳过${typeResult.invalidRowIndices.length}行无效数据）` : ''}`,
+                errors: [],
+                importedCount: data.length,
+              },
+            },
+          }
+
+          if (type === 'residents') {
+            newState.residents = data as Resident[]
+          } else if (type === 'appointments') {
+            newState.appointments = data as Appointment[]
+          } else if (type === 'followups') {
+            newState.followups = data as Followup[]
+          }
+
+          const residents = (newState.residents as Resident[]) || s.residents
+          const appointments = (newState.appointments as Appointment[]) || s.appointments
+          const followups = (newState.followups as Followup[]) || s.followups
+
+          const { anomalies, unregisteredRecords } = detectAnomalies(
+            residents,
+            appointments,
+            followups,
+            s.anomalies,
+            s.qcRules,
+            true
+          )
+          newState.anomalies = anomalies
+          newState.unregisteredRecords = unregisteredRecords
+
+          return newState
+        })
+
+        const logType = typeResult.warningCount > 0
+          ? LogActionType.PRE_CHECK_IMPORT_WARN
+          : LogActionType.PRE_CHECK_IMPORT_PASS
+        get().addLog(logType, `${mode === 'validOnly' ? '仅导入有效数据' : '导入数据'}${type}：${fileName}（${data.length}条）`, {
+          type,
+          fileName,
+          count: data.length,
+          mode,
+          warningCount: typeResult.warningCount,
+        })
+
+        set({ preCheckPendingFile: null, preCheckResult: null })
+        return get().lastImportResult[type]!
+      },
+
+      cancelPreCheck: () => {
+        const pending = get().preCheckPendingFile
+        if (pending) {
+          get().addLog(LogActionType.PRE_CHECK_CANCEL, `取消导入${DataTypeLabels[pending.type]}：${pending.fileName}`, {
+            type: pending.type,
+            fileName: pending.fileName,
+          })
+        }
+        set({ preCheckPendingFile: null, preCheckResult: null })
+      },
+
+      clearPreCheckResult: () => {
+        set({ preCheckResult: null, preCheckPendingFile: null })
+      },
+
+      setPreCheckConfig: config => {
+        set(s => ({ preCheckConfig: { ...s.preCheckConfig, ...config } }))
+      },
+
+      setPreCheckFilter: filter => {
+        set(s => ({
+          preCheckFilterSeverity: filter.severity ?? s.preCheckFilterSeverity,
+          preCheckFilterDataType: filter.dataType ?? s.preCheckFilterDataType,
+          preCheckFilterSearch: filter.search ?? s.preCheckFilterSearch,
+        }))
+      },
+
+      getFilteredPreCheckIssues: () => {
+        const { preCheckResult, preCheckFilterSeverity, preCheckFilterDataType, preCheckFilterSearch, preCheckConfig } = get()
+        if (!preCheckResult) return []
+
+        const allIssues: PreCheckIssue[] = []
+        Object.values(preCheckResult.dataTypes).forEach(r => {
+          if (r) allIssues.push(...r.issues)
+        })
+
+        const filtered = allIssues.filter(issue => {
+          if (preCheckFilterSeverity !== 'all' && issue.severity !== preCheckFilterSeverity) return false
+          if (preCheckFilterDataType !== 'all' && issue.dataType !== preCheckFilterDataType) return false
+          if (preCheckFilterSearch) {
+            const search = preCheckFilterSearch.toLowerCase()
+            return (
+              issue.message.toLowerCase().includes(search) ||
+              issue.field.toLowerCase().includes(search) ||
+              issue.suggestion.toLowerCase().includes(search) ||
+              String(issue.row).includes(search) ||
+              (issue.value || '').toLowerCase().includes(search)
+            )
+          }
+          return true
+        })
+
+        const sorted = [...filtered].sort((a, b) => {
+          if (a.severity !== b.severity) return a.severity === 'error' ? -1 : 1
+          if (a.dataType !== b.dataType) return a.dataType.localeCompare(b.dataType)
+          return a.row - b.row
+        })
+
+        return sorted.slice(0, preCheckConfig.maxDisplayIssues)
+      },
+
+      exportPreCheckReport: format => {
+        const issues = get().getFilteredPreCheckIssues()
+        const { preCheckResult, preCheckFilterSeverity, preCheckFilterDataType, preCheckFilterSearch } = get()
+        if (!preCheckResult) return
+
+        const data = issues.map(i => ({
+          问题ID: i.issueId,
+          数据类型: DataTypeLabels[i.dataType],
+          严重程度: i.severity === 'error' ? '错误' : '警告',
+          问题类型: PreCheckIssueCodeLabels[i.code] || i.code,
+          行号: i.row,
+          字段: i.field,
+          原值: i.value || '',
+          问题描述: i.message,
+          修复建议: i.suggestion,
+        }))
+
+        const timestamp = todayStr().replace(/-/g, '')
+
+        if (format === 'json') {
+          const exportObj = {
+            exportTime: new Date().toISOString(),
+            preCheckId: preCheckResult.preCheckId,
+            preCheckTime: preCheckResult.timestamp,
+            filters: {
+              severity: preCheckFilterSeverity,
+              dataType: preCheckFilterDataType,
+              search: preCheckFilterSearch,
+            },
+            summary: {
+              totalIssues: preCheckResult.overall.totalIssues,
+              totalErrors: preCheckResult.overall.totalErrors,
+              totalWarnings: preCheckResult.overall.totalWarnings,
+              exportedCount: data.length,
+            },
+            issues: data,
+          }
+          downloadFile(JSON.stringify(exportObj, null, 2), `数据预检报告_${timestamp}.json`, 'application/json')
+        } else {
+          const csv = generateCSV(data)
+          downloadFile(csv, `数据预检报告_${timestamp}.csv`, 'text/csv')
+        }
+
+        get().addLog(LogActionType.PRE_CHECK_EXPORT, `导出预检报告（${format.toUpperCase()}，${data.length}条）`, {
+          format,
+          count: data.length,
+        })
       },
 
       importData: async (type, fileText, fileName) => {
@@ -510,6 +865,7 @@ export const useAppStore = create<AppState>()(
         currentRuleVersion: state.currentRuleVersion,
         operationLogs: state.operationLogs,
         currentOperator: state.currentOperator,
+        preCheckConfig: state.preCheckConfig,
       }),
     }
   )

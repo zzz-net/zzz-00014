@@ -158,6 +158,11 @@ export enum LogActionType {
   EXPORT = 'EXPORT',
   REVIEW_STATUS_CHANGE = 'REVIEW_STATUS_CHANGE',
   RESET = 'RESET',
+  PRE_CHECK = 'PRE_CHECK',
+  PRE_CHECK_IMPORT_PASS = 'PRE_CHECK_IMPORT_PASS',
+  PRE_CHECK_IMPORT_WARN = 'PRE_CHECK_IMPORT_WARN',
+  PRE_CHECK_CANCEL = 'PRE_CHECK_CANCEL',
+  PRE_CHECK_EXPORT = 'PRE_CHECK_EXPORT',
 }
 
 export const LogActionTypeLabels: Record<LogActionType, string> = {
@@ -167,6 +172,11 @@ export const LogActionTypeLabels: Record<LogActionType, string> = {
   [LogActionType.EXPORT]: '数据导出',
   [LogActionType.REVIEW_STATUS_CHANGE]: '复核状态修改',
   [LogActionType.RESET]: '数据重置',
+  [LogActionType.PRE_CHECK]: '数据预检',
+  [LogActionType.PRE_CHECK_IMPORT_PASS]: '预检通过导入',
+  [LogActionType.PRE_CHECK_IMPORT_WARN]: '警告继续导入',
+  [LogActionType.PRE_CHECK_CANCEL]: '预检取消导入',
+  [LogActionType.PRE_CHECK_EXPORT]: '预检报告导出',
 }
 
 export interface OperationLog {
@@ -209,3 +219,75 @@ export interface RecalculatePreview {
   protectedAnomalies: number
   diffs: RuleDiff[]
 }
+
+export type PreCheckIssueSeverity = 'error' | 'warning'
+
+export enum PreCheckIssueCode {
+  MISSING_REQUIRED_COLUMN = 'MISSING_REQUIRED_COLUMN',
+  MISSING_REQUIRED_VALUE = 'MISSING_REQUIRED_VALUE',
+  INVALID_DATE_FORMAT = 'INVALID_DATE_FORMAT',
+  INVALID_NUMERIC = 'INVALID_NUMERIC',
+  RESIDENT_NOT_FOUND = 'RESIDENT_NOT_FOUND',
+  DUPLICATE_FOLLOWUP_SAME_DAY = 'DUPLICATE_FOLLOWUP_SAME_DAY',
+  MISSING_HEADER = 'MISSING_HEADER',
+}
+
+export const PreCheckIssueCodeLabels: Record<PreCheckIssueCode, string> = {
+  [PreCheckIssueCode.MISSING_REQUIRED_COLUMN]: '缺失必填列',
+  [PreCheckIssueCode.MISSING_REQUIRED_VALUE]: '缺失必填值',
+  [PreCheckIssueCode.INVALID_DATE_FORMAT]: '日期格式异常',
+  [PreCheckIssueCode.INVALID_NUMERIC]: '数值字段非法',
+  [PreCheckIssueCode.RESIDENT_NOT_FOUND]: '居民编号不存在',
+  [PreCheckIssueCode.DUPLICATE_FOLLOWUP_SAME_DAY]: '同一居民同日重复随访',
+  [PreCheckIssueCode.MISSING_HEADER]: '表头缺失',
+}
+
+export interface PreCheckIssue {
+  issueId: string
+  code: PreCheckIssueCode
+  severity: PreCheckIssueSeverity
+  dataType: DataType
+  row: number
+  field: string
+  value?: string
+  message: string
+  suggestion: string
+}
+
+export interface PreCheckDataTypeResult {
+  dataType: DataType
+  fileName: string
+  totalRows: number
+  validRows: number
+  invalidRowIndices: number[]
+  issues: PreCheckIssue[]
+  errorCount: number
+  warningCount: number
+  parsedData: Record<string, string>[]
+}
+
+export interface PreCheckResult {
+  preCheckId: string
+  timestamp: string
+  dataTypes: Record<DataType, PreCheckDataTypeResult | null>
+  overall: {
+    totalIssues: number
+    totalErrors: number
+    totalWarnings: number
+    canImport: boolean
+    canImportWithWarning: boolean
+  }
+}
+
+export interface PreCheckConfig {
+  maxDisplayIssues: number
+  allowWarningContinue: boolean
+}
+
+export const DEFAULT_PRE_CHECK_CONFIG: PreCheckConfig = {
+  maxDisplayIssues: 100,
+  allowWarningContinue: true,
+}
+
+export type PreCheckFilterSeverity = 'all' | PreCheckIssueSeverity
+export type PreCheckFilterDataType = 'all' | DataType
