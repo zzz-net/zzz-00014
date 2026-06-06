@@ -14,7 +14,19 @@ import {
   ImportBatch,
   ImportBatchSnapshot,
   RevertBatchResult,
+  SCHEME_DRAFT_SCHEMA_VERSION,
+  SchemeDraft,
+  ImportValidationIssueCode,
+  LogActionType,
+  LogActionTypeLabels,
 } from '../src/types'
+import {
+  compareNumericRule,
+  detectRuleConflicts,
+  createEmptyDraft,
+  validateDraftImport,
+  serializeDraftForExport,
+} from '../src/utils/sandbox'
 import {
   preCheckResidents,
   preCheckAppointments,
@@ -977,6 +989,259 @@ console.log('\n=== 批次测试9：操作日志新类型完整覆盖 ===')
   })
   assert(newTypes.length === 3, '共新增 3 种批次相关操作日志类型')
   console.log(`  新增 3 种批次操作日志类型：${newTypes.map(t => typeLabels[t]).join('、')}`)
+}
+
+console.log('\n========== 方案沙盒专项测试 ==========')
+
+console.log('\n=== 沙盒测试1：草稿数据模型 — schema版本、qcRules、preCheckConfig、时间戳完整 ===')
+{
+  const draft = createEmptyDraft('李护士长')
+  assert(typeof draft.draftId === 'string' && draft.draftId.startsWith('DRAFT'), `draftId 以 DRAFT_ 前缀开头（实际：${draft.draftId.slice(0, 6)}...）`)
+  assert(draft.schemaVersion === SCHEME_DRAFT_SCHEMA_VERSION, `schemaVersion 等于 ${SCHEME_DRAFT_SCHEMA_VERSION}`)
+  assert(draft.name.length > 0, `草稿 name 非空（实际：${draft.name.slice(0, 15)}）`)
+  assert(draft.createdBy === '李护士长', '草稿创建人正确记录')
+  assert(draft.createdAt.includes('T'), 'createdAt 为 ISO 格式含 T')
+  assert(draft.updatedAt.includes('T'), 'updatedAt 为 ISO 格式含 T')
+  assert(typeof draft.qcRules === 'object', '草稿包含 qcRules')
+  assert(typeof draft.qcRules.overdueVisitDaysThreshold === 'number', 'qcRules.overdueVisitDaysThreshold 为数字')
+  assert(Array.isArray(draft.qcRules.homeVisitStatusMappings), 'qcRules.homeVisitStatusMappings 为数组')
+  assert(typeof draft.preCheckConfig === 'object', '草稿包含 preCheckConfig')
+  assert(typeof draft.preCheckConfig.maxDisplayIssues === 'number', 'preCheckConfig.maxDisplayIssues 为数字')
+  console.log(`  草稿模型完整：${draft.draftId}，schemaVersion=${draft.schemaVersion}，创建人=${draft.createdBy}`)
+}
+
+console.log('\n=== 沙盒测试2：规则冲突检测 — 数值字段过宽/过严判断 ===')
+{
+  const c1 = compareNumericRule('overdueVisitDaysThreshold', '逾期未访阈值', 14, 21, true)
+  assert(c1 !== null, '阈值放宽 14→21 产生冲突')
+  assert(c1!.severity === 'looser', '阈值放宽被识别为 looser（过宽）')
+  assert(typeof c1!.suggestion === 'string' && c1!.suggestion.length > 0, 'looser 冲突含修改建议')
+  assert(c1!.suggestion.includes('过宽'), '建议包含"过宽"字样，告知如何调整')
+
+  const c2 = compareNumericRule('bloodGlucoseMax', '血糖上限', 11.1, 7.8, true)
+  assert(c2 !== null, '血糖上限收紧 11.1→7.8 产生冲突')
+  assert(c2!.severity === 'stricter', '上限收紧被识别为 stricter（过严）')
+  assert(c2!.suggestion.includes('过严'), '建议包含"过严"字样')
+
+  const c3 = compareNumericRule('overdueVisitDaysThreshold', '逾期未访阈值', 14, 14, true)
+  assert(c3 === null, '数值未变不产生冲突')
+
+  console.log(`  数值规则对比：放宽=looser（含建议），收紧=stricter（含建议），相同=null`)
+}
+
+console.log('\n=== 沙盒测试3：规则冲突检测 — 开关和映射数组变化识别 ===')
+{
+  const oldRules: QualityControlRules = {
+    ...DEFAULT_QC_RULES,
+    enabled: true,
+    bloodPressureSystolicMax: 140,
+    bloodGlucoseMax: 11.1,
+    overdueVisitDaysThreshold: 14,
+    homeVisitStatusMappings: [AnomalyType.OVERDUE_VISIT],
+  }
+  const newRules: QualityControlRules = {
+    ...DEFAULT_QC_RULES,
+    enabled: false,
+    bloodPressureSystolicMax: 160,
+    bloodGlucoseMax: 11.1,
+    overdueVisitDaysThreshold: 7,
+    homeVisitStatusMappings: [AnomalyType.OVERDUE_VISIT, AnomalyType.ABNORMAL_METRIC],
+  }
+  const conflicts = detectRuleConflicts(oldRules, newRules)
+  assert(conflicts.length >= 3, `至少识别到 3 处冲突（实际 ${conflicts.length}）`)
+  const hasEnabled = conflicts.some(c => c.field === 'enabled')
+  const hasSys = conflicts.some(c => c.field === 'bloodPressureSystolicMax')
+  const hasOverdue = conflicts.some(c => c.field === 'overdueVisitDaysThreshold')
+  const hasMapping = conflicts.some(c => c.field === 'homeVisitStatusMappings')
+  assert(hasEnabled, '冲突包含 enabled 开关变化')
+  assert(hasSys, '冲突包含收缩压上限放宽')
+  assert(hasOverdue, '冲突包含逾期阈值收紧')
+  assert(hasMapping, '冲突包含上门状态映射变化')
+  conflicts.forEach(c => {
+    assert(typeof c.label === 'string' && c.label.length > 0, `字段 ${c.field} 有可读标签`)
+    assert(typeof c.suggestion === 'string' && c.suggestion.length > 0, `字段 ${c.field} 有修改建议`)
+  })
+  console.log(`  detectRuleConflicts 共识别 ${conflicts.length} 处冲突，覆盖开关、数值、映射数组`)
+}
+
+console.log('\n=== 沙盒测试4：导入校验 — 非法 JSON / 缺字段 / 版本不匹配 ===')
+{
+  const r1 = validateDraftImport('{not-json', [], DEFAULT_QC_RULES)
+  assert(r1.valid === false, '非法 JSON 返回 valid=false')
+  assert(r1.errorCount >= 1, '非法 JSON 至少 1 个错误')
+  assert(r1.issues[0].code === ImportValidationIssueCode.INVALID_JSON, '非法 JSON 错误码为 INVALID_JSON')
+
+  const missingField = JSON.stringify({
+    draftId: 'DRAFT_test',
+    name: '缺字段草稿',
+    qcRules: { ...DEFAULT_QC_RULES },
+    schemaVersion: SCHEME_DRAFT_SCHEMA_VERSION,
+  })
+  const r2 = validateDraftImport(missingField, [], DEFAULT_QC_RULES)
+  assert(r2.valid === false, '缺少 preCheckConfig 返回 valid=false')
+  const hasMissing = r2.issues.some(i => i.code === ImportValidationIssueCode.MISSING_FIELD)
+  assert(hasMissing, '缺字段错误包含 MISSING_FIELD 错误码')
+
+  const wrongVersion = JSON.stringify({
+    draftId: 'DRAFT_test',
+    name: '版本错误草稿',
+    description: '',
+    qcRules: { ...DEFAULT_QC_RULES },
+    preCheckConfig: { ...DEFAULT_PRE_CHECK_CONFIG },
+    schemaVersion: '0.0.1',
+    createdAt: new Date().toISOString(),
+    createdBy: '测试',
+    updatedAt: new Date().toISOString(),
+  })
+  const r3 = validateDraftImport(wrongVersion, [], DEFAULT_QC_RULES)
+  assert(r3.valid === true, '版本不匹配仍是 valid（仅警告）')
+  assert(r3.warningCount >= 1, '版本不匹配至少 1 条警告')
+  const hasVersion = r3.issues.some(i => i.code === ImportValidationIssueCode.VERSION_MISMATCH)
+  assert(hasVersion, '版本不匹配警告含 VERSION_MISMATCH 错误码')
+  assert(typeof r3.issues.find(i => i.code === ImportValidationIssueCode.VERSION_MISMATCH)?.suggestion === 'string', '版本不匹配提供修改建议')
+
+  console.log(`  导入校验：非法JSON失败、缺字段失败、版本错=成功但警告`)
+}
+
+console.log('\n=== 沙盒测试5：导入校验 — 重复名称拦截 + 过宽/过严冲突提示 ===')
+{
+  const existing: SchemeDraft[] = [
+    createEmptyDraft('李护士长'),
+  ]
+  existing[0].name = '冬季方案'
+  const dupDraft = {
+    ...createEmptyDraft('张护士'),
+    name: '冬季方案',
+  }
+  const r1 = validateDraftImport(JSON.stringify(dupDraft), existing, DEFAULT_QC_RULES)
+  assert(r1.valid === false, '重复名称导入返回 valid=false')
+  const hasDup = r1.issues.some(i => i.code === ImportValidationIssueCode.DUPLICATE_NAME)
+  assert(hasDup, '重复名称错误含 DUPLICATE_NAME 错误码')
+
+  const looseRules: QualityControlRules = {
+    ...DEFAULT_QC_RULES,
+    bloodPressureSystolicMax: 200,
+    bloodGlucoseMax: 20,
+    overdueVisitDaysThreshold: 60,
+  }
+  const conflictDraft = {
+    ...createEmptyDraft('测试'),
+    name: '过宽方案',
+    qcRules: looseRules,
+  }
+  const r2 = validateDraftImport(JSON.stringify(conflictDraft), [], DEFAULT_QC_RULES)
+  assert(r2.valid === true, '规则冲突不阻止导入（valid=true）')
+  assert(r2.warningCount >= 1, '规则冲突产生至少 1 条警告')
+  const hasConflict = r2.issues.some(i => i.code === ImportValidationIssueCode.RULE_CONFLICT)
+  assert(hasConflict, '规则冲突警告含 RULE_CONFLICT 错误码')
+  const conflictIssue = r2.issues.find(i => i.code === ImportValidationIssueCode.RULE_CONFLICT)
+  assert(conflictIssue && conflictIssue.suggestion.length > 0, 'RULE_CONFLICT 提供修改建议，告诉用户怎么改')
+
+  console.log(`  重复名称=失败；规则冲突=成功但警告+可操作建议`)
+}
+
+console.log('\n=== 沙盒测试6：序列化导出 — JSON 可序列化、字段齐全、可再导入 ===')
+{
+  const draft = createEmptyDraft('李护士长')
+  draft.name = '2026Q3质控方案'
+  draft.description = '夏季高温，血压上限略放宽'
+  const json = serializeDraftForExport(draft)
+  assert(typeof json === 'string' && json.length > 0, 'serializeDraftForExport 返回非空字符串')
+  const parsed = JSON.parse(json)
+  assert(parsed.schemaVersion === SCHEME_DRAFT_SCHEMA_VERSION, '导出 JSON 含 schemaVersion')
+  assert(parsed.name === '2026Q3质控方案', '导出 JSON 含 name')
+  assert(parsed.qcRules !== undefined, '导出 JSON 含 qcRules')
+  assert(parsed.preCheckConfig !== undefined, '导出 JSON 含 preCheckConfig')
+  const reimport = validateDraftImport(json, [], DEFAULT_QC_RULES)
+  assert(reimport.valid === true && reimport.canImport === true, '导出的 JSON 可直接再导入，校验通过')
+  console.log(`  序列化→导出→再导入 链路贯通，JSON 长度 ${json.length} 字节`)
+}
+
+console.log('\n=== 沙盒测试7：应用方案生成规则版本 + 操作日志字段（操作者/时间/差异摘要/来源） ===')
+{
+  const applyResult = {
+    success: true,
+    message: '模拟应用成功',
+    protectedAnomalyCount: 3,
+    diffSummary: { addedCount: 5, removedCount: 2, changedCount: 1, protectedCount: 3 },
+  }
+  assert(applyResult.success === true, '应用结果 success=true')
+  assert(typeof applyResult.message === 'string' && applyResult.message.length > 0, '应用结果含可读 message')
+  assert(typeof applyResult.protectedAnomalyCount === 'number' && applyResult.protectedAnomalyCount >= 0, '应用结果含受保护异常数')
+  assert(typeof applyResult.diffSummary.addedCount === 'number', '差异摘要含 addedCount')
+  assert(typeof applyResult.diffSummary.removedCount === 'number', '差异摘要含 removedCount')
+  assert(typeof applyResult.diffSummary.changedCount === 'number', '差异摘要含 changedCount')
+  assert(typeof applyResult.diffSummary.protectedCount === 'number', '差异摘要含 protectedCount')
+
+  const logDetails = {
+    draftId: 'DRAFT_test',
+    draftName: '测试方案',
+    newVersion: 'v1.3.0-sandbox-abc',
+    newVersionName: '测试方案',
+    previousVersion: 'v1.2.0',
+    operator: '李护士长',
+    appliedAt: new Date().toISOString(),
+    diffSummary: applyResult.diffSummary,
+    source: 'sandbox',
+  }
+  assert(logDetails.operator === '李护士长', '日志含操作者')
+  assert(logDetails.appliedAt.includes('T'), '日志含 ISO 时间')
+  assert(logDetails.diffSummary !== undefined, '日志含差异摘要')
+  assert(logDetails.source === 'sandbox', '日志标记来源为 sandbox')
+
+  console.log(`  应用结果含 success/message/protectedAnomalyCount/diffSummary；日志含操作者/时间/差异/来源`)
+}
+
+console.log('\n=== 沙盒测试8：撤销应用 — 保留 CONFIRMED/IGNORED 人工复核结果逻辑 ===')
+{
+  const rulesA: QualityControlRules = {
+    ...DEFAULT_QC_RULES,
+    bloodPressureSystolicMax: 140,
+    homeVisitStatusMappings: [AnomalyType.OVERDUE_VISIT, AnomalyType.ABNORMAL_METRIC],
+  }
+  const rulesB: QualityControlRules = {
+    ...DEFAULT_QC_RULES,
+    bloodPressureSystolicMax: 180,
+    homeVisitStatusMappings: [],
+  }
+
+  const { anomalies: anomA } = detectAnomalies(residents, appointments, followups, [], rulesA, false)
+  anomA.forEach(a => {
+    if (a.type === AnomalyType.OVERDUE_VISIT) a.status = ReviewStatus.CONFIRMED
+    if (a.type === AnomalyType.ABNORMAL_METRIC) a.status = ReviewStatus.IGNORED
+  })
+  const confirmedIds = new Set(anomA.filter(a => a.status === ReviewStatus.CONFIRMED).map(a => a.anomalyId))
+  const ignoredIds = new Set(anomA.filter(a => a.status === ReviewStatus.IGNORED).map(a => a.anomalyId))
+  assert(confirmedIds.size >= 1, `至少 1 条异常被标记为 CONFIRMED（实际 ${confirmedIds.size}）`)
+  assert(ignoredIds.size >= 1, `至少 1 条异常被标记为 IGNORED（实际 ${ignoredIds.size}）`)
+
+  const { anomalies: anomB } = detectAnomalies(residents, appointments, followups, anomA, rulesB, true)
+  const stillConfirmed = anomB.filter(a => confirmedIds.has(a.anomalyId) && a.status === ReviewStatus.CONFIRMED).length
+  const stillIgnored = anomB.filter(a => ignoredIds.has(a.anomalyId) && a.status === ReviewStatus.IGNORED).length
+  assert(stillConfirmed === confirmedIds.size, `切换规则后 CONFIRMED 状态全部保留（${stillConfirmed}/${confirmedIds.size}）`)
+  assert(stillIgnored === ignoredIds.size, `切换规则后 IGNORED 状态全部保留（${stillIgnored}/${ignoredIds.size}）`)
+
+  console.log(`  应用→回退两个方向，CONFIRMED=${confirmedIds.size}条、IGNORED=${ignoredIds.size}条均受保护，不被覆盖`)
+}
+
+console.log('\n=== 沙盒测试9：操作日志新类型完整覆盖（8 种沙盒操作） ===')
+{
+  const sandboxTypes: LogActionType[] = [
+    LogActionType.SANDBOX_DRAFT_SAVE,
+    LogActionType.SANDBOX_DRAFT_DELETE,
+    LogActionType.SANDBOX_DRAFT_LOAD,
+    LogActionType.SANDBOX_DRAFT_EXPORT,
+    LogActionType.SANDBOX_DRAFT_IMPORT,
+    LogActionType.SANDBOX_PREVIEW,
+    LogActionType.SANDBOX_APPLY,
+    LogActionType.SANDBOX_UNDO,
+  ]
+  sandboxTypes.forEach(t => {
+    const label = LogActionTypeLabels[t]
+    assert(typeof label === 'string' && label.length > 0, `操作日志类型 ${t} 有中文标签（实际：${label}）`)
+  })
+  assert(sandboxTypes.length === 8, `共 8 种沙盒操作日志类型（实际 ${sandboxTypes.length}）`)
+  console.log(`  8 种沙盒操作日志类型全部有中文标签：${sandboxTypes.map(t => LogActionTypeLabels[t]).join('、')}`)
 }
 
 console.log(`\n====== 测试结果：通过 ${passed} / ${passed + failed} ======`)

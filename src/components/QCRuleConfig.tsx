@@ -18,6 +18,7 @@ import { useAppStore } from '@/store'
 import { Button } from './common/Button'
 import { Card } from './common/Card'
 import { Badge } from './common/Badge'
+import { SchemeSandbox } from './SchemeSandbox'
 import {
   AnomalyType,
   AnomalyTypeLabels,
@@ -404,6 +405,17 @@ export function QCRuleConfig() {
           )}
         </div>
       </Card>
+
+      <div className="mt-5">
+        <SchemeSandbox
+          draftRules={draftRules}
+          draftPreCheck={draftPreCheck}
+          onLoadDraft={(rules, preCheck) => {
+            setDraftRules({ ...rules, homeVisitStatusMappings: [...rules.homeVisitStatusMappings] })
+            setDraftPreCheck({ ...preCheck })
+          }}
+        />
+      </div>
 
       {showVersionHistory && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowVersionHistory(false)}>

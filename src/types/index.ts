@@ -166,6 +166,14 @@ export enum LogActionType {
   IMPORT_BATCH_CREATE = 'IMPORT_BATCH_CREATE',
   IMPORT_BATCH_REVERT = 'IMPORT_BATCH_REVERT',
   IMPORT_BATCH_EXPORT = 'IMPORT_BATCH_EXPORT',
+  SANDBOX_DRAFT_SAVE = 'SANDBOX_DRAFT_SAVE',
+  SANDBOX_DRAFT_DELETE = 'SANDBOX_DRAFT_DELETE',
+  SANDBOX_DRAFT_LOAD = 'SANDBOX_DRAFT_LOAD',
+  SANDBOX_DRAFT_EXPORT = 'SANDBOX_DRAFT_EXPORT',
+  SANDBOX_DRAFT_IMPORT = 'SANDBOX_DRAFT_IMPORT',
+  SANDBOX_PREVIEW = 'SANDBOX_PREVIEW',
+  SANDBOX_APPLY = 'SANDBOX_APPLY',
+  SANDBOX_UNDO = 'SANDBOX_UNDO',
 }
 
 export const LogActionTypeLabels: Record<LogActionType, string> = {
@@ -183,6 +191,14 @@ export const LogActionTypeLabels: Record<LogActionType, string> = {
   [LogActionType.IMPORT_BATCH_CREATE]: '生成导入批次',
   [LogActionType.IMPORT_BATCH_REVERT]: '撤销导入批次',
   [LogActionType.IMPORT_BATCH_EXPORT]: '导出导入批次',
+  [LogActionType.SANDBOX_DRAFT_SAVE]: '沙盒保存草稿',
+  [LogActionType.SANDBOX_DRAFT_DELETE]: '沙盒删除草稿',
+  [LogActionType.SANDBOX_DRAFT_LOAD]: '沙盒加载草稿',
+  [LogActionType.SANDBOX_DRAFT_EXPORT]: '沙盒导出草稿',
+  [LogActionType.SANDBOX_DRAFT_IMPORT]: '沙盒导入草稿',
+  [LogActionType.SANDBOX_PREVIEW]: '沙盒预跑预览',
+  [LogActionType.SANDBOX_APPLY]: '沙盒应用方案',
+  [LogActionType.SANDBOX_UNDO]: '沙盒撤销应用',
 }
 
 export interface OperationLog {
@@ -224,6 +240,20 @@ export interface RecalculatePreview {
   changedAnomalies: number
   protectedAnomalies: number
   diffs: RuleDiff[]
+}
+
+export interface DetectionResult {
+  anomalies: Anomaly[]
+  unregisteredRecords: UnregisteredRecord[]
+}
+
+export interface RuleDiffPreview {
+  newResult: DetectionResult
+  oldResult: DetectionResult
+  added: Anomaly[]
+  removed: Anomaly[]
+  changed: Anomaly[]
+  protectedCount: number
 }
 
 export type PreCheckIssueSeverity = 'error' | 'warning'
@@ -339,4 +369,98 @@ export interface RevertBatchResult {
   blockedReason?: 'NOT_LATEST' | 'DEPENDENCY_EXISTS' | 'HASH_CONFLICT' | 'ALREADY_REVERTED'
   protectedAnomalyCount?: number
   restoredDataCount?: Record<DataType, number>
+}
+
+export const SCHEME_DRAFT_SCHEMA_VERSION = '1.0.0'
+
+export interface SchemeDraft {
+  draftId: string
+  name: string
+  description: string
+  qcRules: QualityControlRules
+  preCheckConfig: PreCheckConfig
+  schemaVersion: string
+  createdAt: string
+  createdBy: string
+  updatedAt: string
+}
+
+export type RuleConflictSeverity = 'looser' | 'stricter' | 'different'
+
+export const ImportValidationIssueCode = {
+  INVALID_JSON: 'INVALID_JSON',
+  INVALID_TYPE: 'INVALID_TYPE',
+  MISSING_FIELD: 'MISSING_FIELD',
+  VERSION_MISMATCH: 'VERSION_MISMATCH',
+  DUPLICATE_NAME: 'DUPLICATE_NAME',
+  RULE_CONFLICT: 'RULE_CONFLICT',
+} as const
+export type ImportValidationIssueCode = typeof ImportValidationIssueCode[keyof typeof ImportValidationIssueCode]
+
+export interface RuleConflict {
+  field: string
+  label: string
+  oldValue: unknown
+  newValue: unknown
+  severity: RuleConflictSeverity
+  suggestion: string
+}
+
+export interface ImportValidationIssue {
+  code: ImportValidationIssueCode
+  severity: 'error' | 'warning'
+  field?: string
+  message: string
+  suggestion: string
+  conflict?: RuleConflict
+}
+
+export interface ImportValidationResult {
+  valid: boolean
+  canImport: boolean
+  issues: ImportValidationIssue[]
+  errorCount: number
+  warningCount: number
+  parsedDraft?: SchemeDraft
+}
+
+export interface SandboxApplyResult {
+  success: boolean
+  message: string
+  newVersion?: RuleVersion
+  protectedAnomalyCount: number
+  diffSummary: {
+    addedCount: number
+    removedCount: number
+    changedCount: number
+    protectedCount: number
+  }
+}
+
+export interface SandboxUndoResult {
+  success: boolean
+  message: string
+  blockedReason?: 'NO_HISTORY' | 'PROTECTED_RESULTS_EXIST' | 'ALREADY_UNDONE'
+  restoredVersion?: string
+  protectedAnomalyCount: number
+}
+
+export interface SandboxApplyHistory {
+  historyId: string
+  draftId: string
+  draftName: string
+  appliedAt: string
+  appliedBy: string
+  previousRules: QualityControlRules
+  previousVersion: string
+  newVersion: string
+  diffSummary: {
+    addedCount: number
+    removedCount: number
+    changedCount: number
+    protectedCount: number
+  }
+  undone: boolean
+  undoneAt: string | null
+  undoneBy: string | null
 }

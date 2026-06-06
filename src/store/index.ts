@@ -30,12 +30,22 @@ import {
   ImportBatchSnapshot,
   ImportBatchPreCheckSummary,
   RevertBatchResult,
+  SchemeDraft,
+  SandboxApplyResult,
+  SandboxUndoResult,
+  SandboxApplyHistory,
+  ImportValidationResult,
+  SCHEME_DRAFT_SCHEMA_VERSION,
 } from '@/types'
 import { parseCSV, generateCSV, downloadFile } from '@/utils/csv'
 import { validateData } from '@/utils/validator'
 import { detectAnomalies, calculateRuleDiffPreview } from '@/utils/anomaly'
 import { preCheckResidents, preCheckAppointments, preCheckFollowups, buildPreCheckResult } from '@/utils/precheck'
 import { computeHash, generateId, todayStr } from '@/utils/helpers'
+import {
+  validateDraftImport,
+  serializeDraftForExport,
+} from '@/utils/sandbox'
 
 interface AppState {
   residents: Resident[]
@@ -59,6 +69,8 @@ interface AppState {
   preCheckFilterDataType: PreCheckFilterDataType
   preCheckFilterSearch: string
   importBatches: ImportBatch[]
+  schemeDrafts: SchemeDraft[]
+  sandboxApplyHistory: SandboxApplyHistory[]
   importData: (type: DataType, fileText: string, fileName: string) => Promise<ImportResult>
   runPreCheck: (type: DataType, fileText: string, fileName: string) => Promise<PreCheckResult>
   confirmImportFromPreCheck: (mode: 'all' | 'validOnly') => Promise<ImportResult | null>
@@ -99,6 +111,15 @@ interface AppState {
     preCheckResult: PreCheckResult | null,
     snapshot: ImportBatchSnapshot
   ) => void
+  saveSchemeDraft: (name: string, description: string, qcRules: QualityControlRules, preCheckConfig: PreCheckConfig) => SchemeDraft
+  updateSchemeDraft: (draftId: string, updates: Partial<SchemeDraft>) => void
+  deleteSchemeDraft: (draftId: string) => void
+  loadSchemeDraft: (draftId: string) => { qcRules: QualityControlRules; preCheckConfig: PreCheckConfig } | null
+  exportSchemeDraft: (draftId: string) => void
+  importSchemeDraft: (jsonText: string) => ImportValidationResult
+  previewSchemeDraft: (draftId: string) => ReturnType<typeof calculateRuleDiffPreview> | null
+  applySchemeDraft: (draftId: string) => SandboxApplyResult
+  undoLastSandboxApply: () => SandboxUndoResult
 }
 
 const DEFAULT_FILTERS: Filters = {
@@ -144,6 +165,267 @@ export const useAppStore = create<AppState>()(
       preCheckFilterDataType: 'all',
       preCheckFilterSearch: '',
       importBatches: [],
+      schemeDrafts: [],
+      sandboxApplyHistory: [],
+
+      saveSchemeDraft: (name, description, qcRules, preCheckConfig) => {
+        const operator = get().currentOperator
+        const draft: SchemeDraft = {
+          draftId: generateId('DRAFT'),
+          name: name || `草稿 ${new Date().toLocaleString('zh-CN')}`,
+          description,
+          qcRules: { ...qcRules, homeVisitStatusMappings: [...qcRules.homeVisitStatusMappings] },
+          preCheckConfig: { ...preCheckConfig },
+          schemaVersion: SCHEME_DRAFT_SCHEMA_VERSION,
+          createdAt: new Date().toISOString(),
+          createdBy: operator,
+          updatedAt: new Date().toISOString(),
+        }
+        set(s => ({ schemeDrafts: [draft, ...s.schemeDrafts].slice(0, 100) }))
+        get().addLog(LogActionType.SANDBOX_DRAFT_SAVE, `保存方案草稿：${draft.name}`, {
+          draftId: draft.draftId,
+          name: draft.name,
+          qcRules: draft.qcRules,
+          preCheckConfig: draft.preCheckConfig,
+        })
+        return draft
+      },
+
+      updateSchemeDraft: (draftId, updates) => {
+        set(s => ({
+          schemeDrafts: s.schemeDrafts.map(d =>
+            d.draftId === draftId
+              ? { ...d, ...updates, updatedAt: new Date().toISOString() }
+              : d
+          ),
+        }))
+      },
+
+      deleteSchemeDraft: (draftId) => {
+        const draft = get().schemeDrafts.find(d => d.draftId === draftId)
+        set(s => ({ schemeDrafts: s.schemeDrafts.filter(d => d.draftId !== draftId) }))
+        if (draft) {
+          get().addLog(LogActionType.SANDBOX_DRAFT_DELETE, `删除方案草稿：${draft.name}`, {
+            draftId,
+            name: draft.name,
+          })
+        }
+      },
+
+      loadSchemeDraft: (draftId) => {
+        const draft = get().schemeDrafts.find(d => d.draftId === draftId)
+        if (!draft) return null
+        get().addLog(LogActionType.SANDBOX_DRAFT_LOAD, `加载方案草稿：${draft.name}`, {
+          draftId,
+          name: draft.name,
+        })
+        return {
+          qcRules: { ...draft.qcRules, homeVisitStatusMappings: [...draft.qcRules.homeVisitStatusMappings] },
+          preCheckConfig: { ...draft.preCheckConfig },
+        }
+      },
+
+      exportSchemeDraft: (draftId) => {
+        const draft = get().schemeDrafts.find(d => d.draftId === draftId)
+        if (!draft) return
+        const json = serializeDraftForExport(draft)
+        const safeName = draft.name.replace(/[\\/:*?"<>|]/g, '_')
+        downloadFile(json, `方案草稿_${safeName}_${todayStr().replace(/-/g, '')}.json`, 'application/json')
+        get().addLog(LogActionType.SANDBOX_DRAFT_EXPORT, `导出方案草稿：${draft.name}`, {
+          draftId,
+          name: draft.name,
+        })
+      },
+
+      importSchemeDraft: (jsonText) => {
+        const result = validateDraftImport(jsonText, get().schemeDrafts, get().qcRules)
+        if (result.valid && result.canImport && result.parsedDraft) {
+          const imported: SchemeDraft = {
+            ...result.parsedDraft,
+            draftId: generateId('DRAFT'),
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            createdBy: get().currentOperator,
+          }
+          set(s => ({ schemeDrafts: [imported, ...s.schemeDrafts].slice(0, 100) }))
+          get().addLog(LogActionType.SANDBOX_DRAFT_IMPORT, `导入方案草稿：${imported.name}`, {
+            draftId: imported.draftId,
+            name: imported.name,
+            issuesCount: result.issues.length,
+          })
+        }
+        return result
+      },
+
+      previewSchemeDraft: (draftId) => {
+        const draft = get().schemeDrafts.find(d => d.draftId === draftId)
+        if (!draft) return null
+        const preview = get().previewRuleChange(draft.qcRules)
+        get().addLog(LogActionType.SANDBOX_PREVIEW, `预跑方案草稿：${draft.name}`, {
+          draftId,
+          name: draft.name,
+          addedCount: preview.added.length,
+          removedCount: preview.removed.length,
+          changedCount: preview.changed.length,
+          protectedCount: preview.protectedCount,
+        })
+        return preview
+      },
+
+      applySchemeDraft: (draftId): SandboxApplyResult => {
+        const draft = get().schemeDrafts.find(d => d.draftId === draftId)
+        if (!draft) {
+          return { success: false, message: '草稿不存在', protectedAnomalyCount: 0, diffSummary: { addedCount: 0, removedCount: 0, changedCount: 0, protectedCount: 0 } }
+        }
+
+        const { residents, appointments, followups, anomalies, qcRules: oldRules, currentRuleVersion: oldVersion, currentOperator } = get()
+        const preview = calculateRuleDiffPreview(residents, appointments, followups, anomalies, oldRules, draft.qcRules)
+
+        const versionNum = get().ruleVersions.length + 1
+        const newVersion: RuleVersion = {
+          version: `v1.${versionNum}.0-sandbox-${Date.now().toString(36)}`,
+          name: draft.name || `沙盒方案 ${versionNum}`,
+          rules: { ...draft.qcRules, homeVisitStatusMappings: [...draft.qcRules.homeVisitStatusMappings] },
+          createdAt: new Date().toISOString(),
+          createdBy: currentOperator,
+          description: draft.description ? `${draft.description}（来自沙盒方案）` : '由沙盒方案应用生成',
+        }
+
+        const detection = detectAnomalies(residents, appointments, followups, anomalies, draft.qcRules, true)
+
+        set(s => ({
+          qcRules: { ...draft.qcRules, homeVisitStatusMappings: [...draft.qcRules.homeVisitStatusMappings] },
+          preCheckConfig: { ...draft.preCheckConfig },
+          ruleVersions: [...s.ruleVersions, newVersion],
+          currentRuleVersion: newVersion.version,
+          anomalies: detection.anomalies,
+          unregisteredRecords: detection.unregisteredRecords,
+        }))
+
+        const history: SandboxApplyHistory = {
+          historyId: generateId('SHIST'),
+          draftId: draft.draftId,
+          draftName: draft.name,
+          appliedAt: new Date().toISOString(),
+          appliedBy: currentOperator,
+          previousRules: { ...oldRules, homeVisitStatusMappings: [...oldRules.homeVisitStatusMappings] },
+          previousVersion: oldVersion,
+          newVersion: newVersion.version,
+          diffSummary: {
+            addedCount: preview.added.length,
+            removedCount: preview.removed.length,
+            changedCount: preview.changed.length,
+            protectedCount: preview.protectedCount,
+          },
+          undone: false,
+          undoneAt: null,
+          undoneBy: null,
+        }
+        set(s => ({ sandboxApplyHistory: [history, ...s.sandboxApplyHistory].slice(0, 50) }))
+
+        get().addLog(LogActionType.SANDBOX_APPLY, `应用沙盒方案：${draft.name} → 新版本 ${newVersion.name}`, {
+          draftId: draft.draftId,
+          draftName: draft.name,
+          newVersion: newVersion.version,
+          newVersionName: newVersion.name,
+          previousVersion: oldVersion,
+          diffSummary: history.diffSummary,
+          source: 'sandbox',
+        })
+
+        return {
+          success: true,
+          message: `已应用方案「${draft.name}」，生成规则版本「${newVersion.name}」。新增${preview.added.length}条、移除${preview.removed.length}条、变更${preview.changed.length}条异常，保护${preview.protectedCount}条人工复核记录。`,
+          newVersion,
+          protectedAnomalyCount: preview.protectedCount,
+          diffSummary: {
+            addedCount: preview.added.length,
+            removedCount: preview.removed.length,
+            changedCount: preview.changed.length,
+            protectedCount: preview.protectedCount,
+          },
+        }
+      },
+
+      undoLastSandboxApply: (): SandboxUndoResult => {
+        const s = get()
+        const nonUndone = s.sandboxApplyHistory.filter(h => !h.undone)
+        if (nonUndone.length === 0) {
+          return { success: false, message: '没有可撤销的沙盒应用记录', blockedReason: 'NO_HISTORY', protectedAnomalyCount: 0 }
+        }
+
+        const last = nonUndone[0]
+
+        const PROTECTED = [ReviewStatus.CONFIRMED, ReviewStatus.IGNORED]
+        const protectedAnomalyIds = new Set(
+          s.anomalies.filter(a => PROTECTED.includes(a.status)).map(a => a.anomalyId)
+        )
+        const currentAnomalyMap = new Map(s.anomalies.map(a => [a.anomalyId, a]))
+
+        const { anomalies: restoredBaseAnomalies } = detectAnomalies(
+          s.residents,
+          s.appointments,
+          s.followups,
+          s.anomalies,
+          last.previousRules,
+          false
+        )
+
+        const mergedAnomalies: Anomaly[] = []
+        const processedKeys = new Set<string>()
+
+        restoredBaseAnomalies.forEach(ra => {
+          processedKeys.add(ra.anomalyId)
+          const current = currentAnomalyMap.get(ra.anomalyId)
+          if (current && PROTECTED.includes(current.status)) {
+            mergedAnomalies.push(current)
+          } else {
+            mergedAnomalies.push(ra)
+          }
+        })
+
+        s.anomalies.forEach(ca => {
+          if (!processedKeys.has(ca.anomalyId) && PROTECTED.includes(ca.status)) {
+            mergedAnomalies.push(ca)
+            protectedAnomalyIds.add(ca.anomalyId)
+          }
+        })
+
+        const protectedCount = Array.from(protectedAnomalyIds).filter(id => {
+          const a = currentAnomalyMap.get(id)
+          return a && PROTECTED.includes(a.status)
+        }).length
+
+        set(prev => ({
+          qcRules: { ...last.previousRules, homeVisitStatusMappings: [...last.previousRules.homeVisitStatusMappings] },
+          currentRuleVersion: last.previousVersion,
+          anomalies: mergedAnomalies,
+          sandboxApplyHistory: prev.sandboxApplyHistory.map(h =>
+            h.historyId === last.historyId
+              ? { ...h, undone: true, undoneAt: new Date().toISOString(), undoneBy: prev.currentOperator }
+              : h
+          ),
+        }))
+
+        const detection = detectAnomalies(s.residents, s.appointments, s.followups, mergedAnomalies, last.previousRules, true)
+        set({ anomalies: detection.anomalies, unregisteredRecords: detection.unregisteredRecords })
+
+        get().addLog(LogActionType.SANDBOX_UNDO, `撤销沙盒应用：${last.draftName}，恢复到版本 ${last.previousVersion}`, {
+          historyId: last.historyId,
+          draftId: last.draftId,
+          draftName: last.draftName,
+          restoredVersion: last.previousVersion,
+          newVersion: last.newVersion,
+          protectedAnomalyCount: protectedCount,
+        })
+
+        return {
+          success: true,
+          message: `已撤销方案「${last.draftName}」的应用，恢复到版本 ${last.previousVersion}，保留${protectedCount}条已人工确认/忽略的复核结果。`,
+          restoredVersion: last.previousVersion,
+          protectedAnomalyCount: protectedCount,
+        }
+      },
 
       addLog: (actionType, description, details = {}) => {
         const log: OperationLog = {
@@ -1200,6 +1482,8 @@ export const useAppStore = create<AppState>()(
         currentOperator: state.currentOperator,
         preCheckConfig: state.preCheckConfig,
         importBatches: state.importBatches,
+        schemeDrafts: state.schemeDrafts,
+        sandboxApplyHistory: state.sandboxApplyHistory,
       }),
     }
   )

@@ -8,13 +8,10 @@ import {
   UnregisteredRecord,
   QualityControlRules,
   DEFAULT_QC_RULES,
+  DetectionResult,
+  RuleDiffPreview,
 } from '@/types'
 import { daysBetween, generateId, todayStr } from './helpers'
-
-export interface DetectionResult {
-  anomalies: Anomaly[]
-  unregisteredRecords: UnregisteredRecord[]
-}
 
 const PROTECTED_STATUSES = [ReviewStatus.CONFIRMED, ReviewStatus.IGNORED]
 
@@ -324,14 +321,7 @@ export function calculateRuleDiffPreview(
   existingAnomalies: Anomaly[],
   oldRules: QualityControlRules,
   newRules: QualityControlRules
-): {
-  newResult: DetectionResult
-  oldResult: DetectionResult
-  added: Anomaly[]
-  removed: Anomaly[]
-  changed: Anomaly[]
-  protectedCount: number
-} {
+): RuleDiffPreview {
   const oldResult = detectAnomalies(residents, appointments, followups, existingAnomalies, oldRules, false)
   const newResult = detectAnomalies(residents, appointments, followups, existingAnomalies, newRules, false)
 
