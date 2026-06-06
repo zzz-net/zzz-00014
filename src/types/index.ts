@@ -125,7 +125,7 @@ export interface QualityControlRules {
   bloodPressureSystolicMin: number
   bloodPressureDiastolicMin: number
   bloodGlucoseMin: number
-  homeVisitStatusMappings: string[]
+  homeVisitStatusMappings: AnomalyType[]
   enabled: boolean
 }
 
@@ -138,7 +138,7 @@ export const DEFAULT_QC_RULES: QualityControlRules = {
   bloodPressureSystolicMin: 90,
   bloodPressureDiastolicMin: 60,
   bloodGlucoseMin: 3.9,
-  homeVisitStatusMappings: ['NEED_HOME_VISIT'],
+  homeVisitStatusMappings: [AnomalyType.OVERDUE_VISIT, AnomalyType.ABNORMAL_METRIC],
   enabled: true,
 }
 

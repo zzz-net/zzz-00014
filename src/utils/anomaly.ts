@@ -11,12 +11,24 @@ import {
 } from '@/types'
 import { daysBetween, generateId, todayStr } from './helpers'
 
-interface DetectionResult {
+export interface DetectionResult {
   anomalies: Anomaly[]
   unregisteredRecords: UnregisteredRecord[]
 }
 
 const PROTECTED_STATUSES = [ReviewStatus.CONFIRMED, ReviewStatus.IGNORED]
+
+function initialStatusFor(
+  type: AnomalyType,
+  rules: QualityControlRules,
+  existingStatus?: ReviewStatus
+): ReviewStatus {
+  if (existingStatus) return existingStatus
+  if (rules.homeVisitStatusMappings.includes(type)) {
+    return ReviewStatus.NEED_HOME_VISIT
+  }
+  return ReviewStatus.PENDING
+}
 
 export function detectAnomalies(
   residents: Resident[],
@@ -52,11 +64,6 @@ export function detectAnomalies(
     return allStatusMap.get(`${type}_${relatedId}`) || null
   }
 
-  const isProtected = (type: AnomalyType, relatedId: string): boolean => {
-    if (!respectProtection) return false
-    return protectedMap.has(`${type}_${relatedId}`)
-  }
-
   const unregisteredIds = new Set<string>()
 
   appointments.forEach(apt => {
@@ -81,7 +88,7 @@ export function detectAnomalies(
         relatedId: `APT_${apt.residentId}_${apt.date}`,
         relatedRecord: apt,
         description: `预约记录中的居民编号 ${apt.residentId} 不在居民名册中`,
-        status: existing?.status || ReviewStatus.PENDING,
+        status: initialStatusFor(AnomalyType.UNREGISTERED_RESIDENT, rules, existing?.status),
         remark: existing?.remark || '',
         handler: existing?.handler || '',
         updatedAt: existing?.updatedAt || '',
@@ -119,7 +126,7 @@ export function detectAnomalies(
           relatedId: `FOL_${fol.residentId}_${fol.date}`,
           relatedRecord: fol,
           description: `随访记录中的居民编号 ${fol.residentId} 不在居民名册中`,
-          status: existing?.status || ReviewStatus.PENDING,
+          status: initialStatusFor(AnomalyType.UNREGISTERED_RESIDENT, rules, existing?.status),
           remark: existing?.remark || '',
           handler: existing?.handler || '',
           updatedAt: existing?.updatedAt || '',
@@ -150,7 +157,7 @@ export function detectAnomalies(
           relatedId: fol.followupId,
           relatedRecord: fol,
           description: `居民 ${getResidentName(fol.residentId) || fol.residentId} 在 ${fol.date} 有 ${group.length} 条随访记录（第${idx + 1}条）`,
-          status: existing?.status || ReviewStatus.PENDING,
+          status: initialStatusFor(AnomalyType.DUPLICATE_FOLLOWUP, rules, existing?.status),
           remark: existing?.remark || '',
           handler: existing?.handler || '',
           updatedAt: existing?.updatedAt || '',
@@ -199,7 +206,7 @@ export function detectAnomalies(
           relatedId: fol.followupId,
           relatedRecord: fol,
           description: `居民 ${getResidentName(fol.residentId) || fol.residentId} 在 ${fol.date} 指标异常: ${abnormalMetrics.join(', ')}`,
-          status: existing?.status || ReviewStatus.PENDING,
+          status: initialStatusFor(AnomalyType.ABNORMAL_METRIC, rules, existing?.status),
           remark: existing?.remark || '',
           handler: existing?.handler || '',
           updatedAt: existing?.updatedAt || '',
@@ -241,7 +248,7 @@ export function detectAnomalies(
           relatedId: apt.appointmentId,
           relatedRecord: apt,
           description: `居民 ${getResidentName(apt.residentId) || apt.residentId} 预约日期 ${apt.date} 已逾期 ${daysBetween(apt.date, today)} 天未随访`,
-          status: existing?.status || ReviewStatus.PENDING,
+          status: initialStatusFor(AnomalyType.OVERDUE_VISIT, rules, existing?.status),
           remark: existing?.remark || '',
           handler: existing?.handler || '',
           updatedAt: existing?.updatedAt || '',
@@ -277,7 +284,7 @@ export function detectAnomalies(
           relatedId: fol.followupId,
           relatedRecord: fol,
           description: `居民 ${getResidentName(fol.residentId) || fol.residentId} 在 ${fol.date} 的随访无对应预约记录`,
-          status: existing?.status || ReviewStatus.PENDING,
+          status: initialStatusFor(AnomalyType.UNPLANNED_VISIT, rules, existing?.status),
           remark: existing?.remark || '',
           handler: existing?.handler || '',
           updatedAt: existing?.updatedAt || '',
@@ -338,7 +345,7 @@ export function calculateRuleDiffPreview(
       added.push(a)
     } else {
       const old = oldMap.get(key)!
-      if (old.description !== a.description || old.severity !== a.severity) {
+      if (old.description !== a.description || old.severity !== a.severity || old.status !== a.status) {
         changed.push(a)
       }
     }

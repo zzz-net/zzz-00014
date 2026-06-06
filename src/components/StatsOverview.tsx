@@ -1,4 +1,4 @@
-import { AlertTriangle, CalendarX, CalendarCheck, Copy, Activity, Users } from 'lucide-react'
+import { AlertTriangle, CalendarX, CalendarCheck, Copy, Activity } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AnomalyType, AnomalyTypeLabels, ReviewStatus } from '@/types'
 import { useAppStore } from '@/store'
@@ -29,7 +29,6 @@ function StatCard({ title, value, icon, color, bgColor }: StatCardProps) {
 
 export function StatsOverview() {
   const anomalies = useAppStore(s => s.anomalies)
-  const unregisteredCount = useAppStore(s => s.unregisteredRecords.length)
   const pendingCount = anomalies.filter(a => a.status === ReviewStatus.PENDING).length
 
   const typeCounts = {

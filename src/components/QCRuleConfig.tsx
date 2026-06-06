@@ -11,16 +11,18 @@ import {
   Trash2,
   Play,
   ShieldCheck,
+  Home,
 } from 'lucide-react'
 import { useAppStore } from '@/store'
 import { Button } from './common/Button'
 import { Card } from './common/Card'
 import { Badge } from './common/Badge'
 import {
+  AnomalyType,
+  AnomalyTypeLabels,
   QualityControlRules,
   DEFAULT_QC_RULES,
   RuleVersion,
-  AnomalyTypeLabels,
 } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -244,6 +246,54 @@ export function QCRuleConfig() {
                   />
                 </div>
               </div>
+
+              <div className="bg-blue-50 rounded-lg p-4 space-y-3">
+                <h4 className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+                  <Home className="w-4 h-4 text-blue-600" />
+                  需要上门的状态映射
+                </h4>
+                <p className="text-xs text-gray-500">
+                  选中的异常类型在首次识别时，复核状态将自动标记为"需上门"，而非默认的"待处理"。
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {(Object.keys(AnomalyTypeLabels) as AnomalyType[]).map(type => {
+                    const selected = draftRules.homeVisitStatusMappings.includes(type)
+                    return (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => {
+                          const has = draftRules.homeVisitStatusMappings.includes(type)
+                          setDraftRules({
+                            ...draftRules,
+                            homeVisitStatusMappings: has
+                              ? draftRules.homeVisitStatusMappings.filter(t => t !== type)
+                              : [...draftRules.homeVisitStatusMappings, type],
+                          })
+                        }}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition-colors',
+                          selected
+                            ? 'bg-blue-600 text-white border-blue-600'
+                            : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400 hover:text-blue-600'
+                        )}
+                      >
+                        <span className={cn('w-3.5 h-3.5 rounded border flex items-center justify-center',
+                          selected ? 'bg-white/20 border-white/40' : 'border-gray-300')}>
+                          {selected && <CheckCircle className="w-3 h-3" />}
+                        </span>
+                        {AnomalyTypeLabels[type]}
+                      </button>
+                    )
+                  })}
+                </div>
+                {draftRules.homeVisitStatusMappings.length === 0 && (
+                  <p className="text-xs text-amber-600 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    未选择任何类型，所有新识别异常的初始状态都将是"待处理"
+                  </p>
+                )}
+              </div>
             </div>
           </div>
 
@@ -347,6 +397,11 @@ export function QCRuleConfig() {
                             <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">
                               血糖: {version.rules.bloodGlucoseMin}-{version.rules.bloodGlucoseMax}
                             </span>
+                            {version.rules.homeVisitStatusMappings.length > 0 && (
+                              <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
+                                上门映射: {version.rules.homeVisitStatusMappings.map(t => AnomalyTypeLabels[t]).join('/')}
+                              </span>
+                            )}
                           </div>
                         </div>
                         <div className="flex items-center gap-1">

@@ -16,12 +16,15 @@ export function FileUpload({ type }: FileUploadProps) {
   const [fileName, setFileName] = useState('')
   const lastResult = useAppStore(s => s.lastImportResult[type])
   const importData = useAppStore(s => s.importData)
+  const residentsCount = useAppStore(s => s.residents.length)
+  const appointmentsCount = useAppStore(s => s.appointments.length)
+  const followupsCount = useAppStore(s => s.followups.length)
   const importedCount =
     type === 'residents'
-      ? useAppStore(s => s.residents.length)
+      ? residentsCount
       : type === 'appointments'
-      ? useAppStore(s => s.appointments.length)
-      : useAppStore(s => s.followups.length)
+      ? appointmentsCount
+      : followupsCount
 
   const handleFile = async (file: File) => {
     setFileName(file.name)

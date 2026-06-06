@@ -52,7 +52,7 @@ function parseCSVLine(line: string): string[] {
   return result
 }
 
-export function generateCSV(rows: Record<string, any>[], headers?: string[]): string {
+export function generateCSV(rows: Record<string, unknown>[], headers?: string[]): string {
   if (rows.length === 0) return ''
 
   const cols = headers || Object.keys(rows[0])
