@@ -108,6 +108,14 @@ export interface Filters {
   searchText: string
 }
 
+export const DEFAULT_FILTERS: Filters = {
+  sites: [],
+  nurses: [],
+  anomalyTypes: [],
+  statuses: [],
+  searchText: '',
+}
+
 export type DataType = 'residents' | 'appointments' | 'followups'
 
 export const DataTypeLabels: Record<DataType, string> = {
@@ -174,6 +182,11 @@ export enum LogActionType {
   SANDBOX_PREVIEW = 'SANDBOX_PREVIEW',
   SANDBOX_APPLY = 'SANDBOX_APPLY',
   SANDBOX_UNDO = 'SANDBOX_UNDO',
+  HANDOVER_CREATE = 'HANDOVER_CREATE',
+  HANDOVER_EXPORT = 'HANDOVER_EXPORT',
+  HANDOVER_IMPORT = 'HANDOVER_IMPORT',
+  HANDOVER_APPLY = 'HANDOVER_APPLY',
+  HANDOVER_UNDO = 'HANDOVER_UNDO',
 }
 
 export const LogActionTypeLabels: Record<LogActionType, string> = {
@@ -199,6 +212,11 @@ export const LogActionTypeLabels: Record<LogActionType, string> = {
   [LogActionType.SANDBOX_PREVIEW]: '沙盒预跑预览',
   [LogActionType.SANDBOX_APPLY]: '沙盒应用方案',
   [LogActionType.SANDBOX_UNDO]: '沙盒撤销应用',
+  [LogActionType.HANDOVER_CREATE]: '生成交接包',
+  [LogActionType.HANDOVER_EXPORT]: '导出交接包',
+  [LogActionType.HANDOVER_IMPORT]: '导入交接包',
+  [LogActionType.HANDOVER_APPLY]: '应用交接包',
+  [LogActionType.HANDOVER_UNDO]: '撤销交接包应用',
 }
 
 export interface OperationLog {
@@ -463,4 +481,125 @@ export interface SandboxApplyHistory {
   undone: boolean
   undoneAt: string | null
   undoneBy: string | null
+}
+
+export const HANDOVER_PACKAGE_SCHEMA_VERSION = '1.0.0'
+
+export interface HandoverAnomalyItem {
+  anomalyId: string
+  type: AnomalyType
+  severity: 'high' | 'medium' | 'low'
+  residentId: string
+  residentName?: string
+  description: string
+  status: ReviewStatus
+  remark: string
+  handler: string
+  updatedAt: string
+  site?: string
+  nurse?: string
+}
+
+export interface HandoverImportBatchSummary {
+  batchId: string
+  dataType: DataType
+  fileName: string
+  importedCount: number
+  skippedCount: number
+  operator: string
+  createdAt: string
+}
+
+export interface HandoverFiltersSummary {
+  sites: string[]
+  nurses: string[]
+  anomalyTypes: AnomalyType[]
+  statuses: ReviewStatus[]
+  searchText: string
+}
+
+export interface HandoverPackage {
+  packageId: string
+  name: string
+  description: string
+  schemaVersion: string
+  createdAt: string
+  createdBy: string
+  sourceMode: 'filter' | 'selected'
+  filters: HandoverFiltersSummary | null
+  selectedCount: number
+  ruleVersion: string
+  ruleVersionName: string
+  qcRules: QualityControlRules
+  anomalies: HandoverAnomalyItem[]
+  importBatchSummaries: HandoverImportBatchSummary[]
+}
+
+export const HandoverConflictCode = {
+  INVALID_JSON: 'INVALID_JSON',
+  INVALID_TYPE: 'INVALID_TYPE',
+  MISSING_FIELD: 'MISSING_FIELD',
+  VERSION_MISMATCH: 'VERSION_MISMATCH',
+  ANOMALY_NOT_FOUND: 'ANOMALY_NOT_FOUND',
+  STATUS_OLDER: 'STATUS_OLDER',
+  PROTECTED_STATUS: 'PROTECTED_STATUS',
+} as const
+export type HandoverConflictCode = typeof HandoverConflictCode[keyof typeof HandoverConflictCode]
+
+export interface HandoverImportIssue {
+  code: HandoverConflictCode
+  severity: 'error' | 'warning'
+  field?: string
+  anomalyId?: string
+  message: string
+  suggestion: string
+}
+
+export interface HandoverImportValidationResult {
+  valid: boolean
+  canApply: boolean
+  issues: HandoverImportIssue[]
+  errorCount: number
+  warningCount: number
+  parsedPackage?: HandoverPackage
+  applicableCount: number
+  protectedCount: number
+  notFoundCount: number
+  olderStatusCount: number
+}
+
+export interface HandoverApplyResult {
+  success: boolean
+  message: string
+  updatedCount: number
+  protectedCount: number
+  skippedCount: number
+  historyId?: string
+}
+
+export interface HandoverApplySnapshot {
+  anomalies: Anomaly[]
+}
+
+export interface HandoverApplyHistory {
+  historyId: string
+  packageId: string
+  packageName: string
+  appliedAt: string
+  appliedBy: string
+  updatedCount: number
+  protectedCount: number
+  skippedCount: number
+  snapshot: HandoverApplySnapshot
+  undone: boolean
+  undoneAt: string | null
+  undoneBy: string | null
+}
+
+export interface HandoverUndoResult {
+  success: boolean
+  message: string
+  blockedReason?: 'NO_HISTORY' | 'ALREADY_UNDONE'
+  restoredCount: number
+  protectedCount: number
 }

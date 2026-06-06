@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   LayoutDashboard,
   Layers,
+  Package,
 } from 'lucide-react'
 import { useAppStore } from '@/store'
 import { FileUpload } from '@/components/FileUpload'
@@ -22,6 +23,7 @@ import { UnregisteredList } from '@/components/UnregisteredList'
 import { QCRuleConfig } from '@/components/QCRuleConfig'
 import { OperationLogs } from '@/components/OperationLogs'
 import { ImportBatches } from '@/components/ImportBatches'
+import { HandoverPanel } from '@/components/HandoverPanel'
 import { Button } from '@/components/common/Button'
 import { Card } from '@/components/common/Card'
 import { Badge } from '@/components/common/Badge'
@@ -46,6 +48,7 @@ export default function Dashboard() {
   const [showHelp, setShowHelp] = useState(false)
   const [showResetConfirm, setShowResetConfirm] = useState(false)
   const [showRecalcConfirm, setShowRecalcConfirm] = useState(false)
+  const [showHandover, setShowHandover] = useState(false)
   const [activeTab, setActiveTab] = useState<TabType>('dashboard')
 
   const currentVersion = ruleVersions.find(v => v.version === currentRuleVersion)
@@ -108,6 +111,15 @@ export default function Dashboard() {
               </Button>
               {activeTab === 'dashboard' && (
                 <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowHandover(true)}
+                    className="bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600 hover:text-white"
+                  >
+                    <Package className="w-4 h-4" />
+                    <span className="hidden sm:inline">交接包</span>
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"
@@ -327,6 +339,8 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      <HandoverPanel open={showHandover} onClose={() => setShowHandover(false)} />
     </div>
   )
 }

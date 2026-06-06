@@ -8,6 +8,7 @@ import {
   DEFAULT_LOG_FILTERS,
   DEFAULT_QC_RULES,
   DEFAULT_PRE_CHECK_CONFIG,
+  DEFAULT_FILTERS,
   Filters,
   Followup,
   ImportResult,
@@ -36,6 +37,11 @@ import {
   SandboxApplyHistory,
   ImportValidationResult,
   SCHEME_DRAFT_SCHEMA_VERSION,
+  HandoverPackage,
+  HandoverImportValidationResult,
+  HandoverApplyResult,
+  HandoverUndoResult,
+  HandoverApplyHistory,
 } from '@/types'
 import { parseCSV, generateCSV, downloadFile } from '@/utils/csv'
 import { validateData } from '@/utils/validator'
@@ -46,6 +52,12 @@ import {
   validateDraftImport,
   serializeDraftForExport,
 } from '@/utils/sandbox'
+import {
+  buildHandoverPackage,
+  serializeHandoverForExport,
+  handoverToCSV,
+  validateHandoverImport,
+} from '@/utils/handover'
 
 interface AppState {
   residents: Resident[]
@@ -71,6 +83,18 @@ interface AppState {
   importBatches: ImportBatch[]
   schemeDrafts: SchemeDraft[]
   sandboxApplyHistory: SandboxApplyHistory[]
+  handoverPackages: HandoverPackage[]
+  handoverApplyHistory: HandoverApplyHistory[]
+  selectedAnomalyIds: string[]
+  toggleAnomalySelection: (anomalyId: string) => void
+  clearAnomalySelection: () => void
+  selectAllFilteredAnomalies: () => void
+  createHandoverPackage: (params: { name: string; description: string; sourceMode: 'filter' | 'selected' }) => HandoverPackage
+  exportHandoverPackage: (packageId: string, format: 'json' | 'csv') => void
+  importHandoverPackage: (jsonText: string) => HandoverImportValidationResult
+  applyHandoverPackage: (packageId: string) => HandoverApplyResult
+  undoLastHandoverApply: () => HandoverUndoResult
+  deleteHandoverPackage: (packageId: string) => void
   importData: (type: DataType, fileText: string, fileName: string) => Promise<ImportResult>
   runPreCheck: (type: DataType, fileText: string, fileName: string) => Promise<PreCheckResult>
   confirmImportFromPreCheck: (mode: 'all' | 'validOnly') => Promise<ImportResult | null>
@@ -122,14 +146,6 @@ interface AppState {
   undoLastSandboxApply: () => SandboxUndoResult
 }
 
-const DEFAULT_FILTERS: Filters = {
-  sites: [],
-  nurses: [],
-  anomalyTypes: [],
-  statuses: [],
-  searchText: '',
-}
-
 const INITIAL_VERSIONS: RuleVersion[] = [
   {
     version: 'v1.0.0-default',
@@ -167,6 +183,260 @@ export const useAppStore = create<AppState>()(
       importBatches: [],
       schemeDrafts: [],
       sandboxApplyHistory: [],
+      handoverPackages: [],
+      handoverApplyHistory: [],
+      selectedAnomalyIds: [],
+
+      toggleAnomalySelection: (anomalyId) => {
+        set(s => {
+          const exists = s.selectedAnomalyIds.includes(anomalyId)
+          return {
+            selectedAnomalyIds: exists
+              ? s.selectedAnomalyIds.filter(id => id !== anomalyId)
+              : [...s.selectedAnomalyIds, anomalyId],
+          }
+        })
+      },
+
+      clearAnomalySelection: () => {
+        set({ selectedAnomalyIds: [] })
+      },
+
+      selectAllFilteredAnomalies: () => {
+        const filtered = get().getFilteredAnomalies()
+        set({ selectedAnomalyIds: filtered.map(a => a.anomalyId) })
+      },
+
+      createHandoverPackage: ({ name, description, sourceMode }) => {
+        const s = get()
+        const anomalies = sourceMode === 'selected'
+          ? s.anomalies.filter(a => s.selectedAnomalyIds.includes(a.anomalyId))
+          : s.getFilteredAnomalies()
+        const currentVersion = s.ruleVersions.find(v => v.version === s.currentRuleVersion)
+        const pkg = buildHandoverPackage({
+          name,
+          description,
+          sourceMode,
+          filters: sourceMode === 'filter' ? s.filters : null,
+          anomalies,
+          importBatches: s.importBatches,
+          ruleVersion: s.currentRuleVersion,
+          ruleVersionName: currentVersion?.name || s.currentRuleVersion,
+          qcRules: s.qcRules,
+          operator: s.currentOperator,
+        })
+        set(state => ({ handoverPackages: [pkg, ...state.handoverPackages].slice(0, 50) }))
+        get().addLog(LogActionType.HANDOVER_CREATE, `生成交接包：${pkg.name}（${anomalies.length}条）`, {
+          packageId: pkg.packageId,
+          name: pkg.name,
+          sourceMode,
+          anomalyCount: anomalies.length,
+          ruleVersion: pkg.ruleVersion,
+        })
+        return pkg
+      },
+
+      exportHandoverPackage: (packageId, format) => {
+        const pkg = get().handoverPackages.find(p => p.packageId === packageId)
+        if (!pkg) return
+        const timestamp = todayStr().replace(/-/g, '')
+        const safeName = pkg.name.replace(/[\\/:*?"<>|]/g, '_')
+        if (format === 'json') {
+          const json = serializeHandoverForExport(pkg)
+          downloadFile(json, `交接包_${safeName}_${timestamp}.json`, 'application/json')
+        } else {
+          const csv = handoverToCSV(pkg)
+          downloadFile(csv, `交接包_${safeName}_${timestamp}.csv`, 'text/csv')
+        }
+        get().addLog(LogActionType.HANDOVER_EXPORT, `导出交接包：${pkg.name}（${format.toUpperCase()}）`, {
+          packageId,
+          name: pkg.name,
+          format,
+          anomalyCount: pkg.anomalies.length,
+        })
+      },
+
+      importHandoverPackage: (jsonText) => {
+        const s = get()
+        const result = validateHandoverImport(jsonText, s.anomalies)
+        if (result.valid && result.parsedPackage) {
+          const imported: HandoverPackage = {
+            ...result.parsedPackage,
+            packageId: generateId('HANDOVER'),
+            createdAt: new Date().toISOString(),
+            createdBy: s.currentOperator,
+          }
+          set(state => ({ handoverPackages: [imported, ...state.handoverPackages].slice(0, 50) }))
+          get().addLog(LogActionType.HANDOVER_IMPORT, `导入交接包：${imported.name}`, {
+            packageId: imported.packageId,
+            name: imported.name,
+            sourceAnomalyCount: imported.anomalies.length,
+            applicableCount: result.applicableCount,
+            protectedCount: result.protectedCount,
+            notFoundCount: result.notFoundCount,
+            olderStatusCount: result.olderStatusCount,
+          })
+        }
+        return result
+      },
+
+      applyHandoverPackage: (packageId): HandoverApplyResult => {
+        const s = get()
+        const pkg = s.handoverPackages.find(p => p.packageId === packageId)
+        if (!pkg) {
+          return { success: false, message: '交接包不存在', updatedCount: 0, protectedCount: 0, skippedCount: 0 }
+        }
+
+        const PROTECTED = [ReviewStatus.CONFIRMED, ReviewStatus.IGNORED]
+        const UPDATEABLE = [ReviewStatus.PENDING, ReviewStatus.NEED_HOME_VISIT]
+        const snapshot: HandoverApplyHistory['snapshot'] = {
+          anomalies: s.anomalies.map(a => ({ ...a })),
+        }
+
+        let updatedCount = 0
+        let protectedCount = 0
+        let skippedCount = 0
+        const newAnomalies: Anomaly[] = []
+
+        s.anomalies.forEach(local => {
+          const handoverItem = pkg.anomalies.find(h => h.anomalyId === local.anomalyId)
+          if (!handoverItem) {
+            newAnomalies.push(local)
+            return
+          }
+          if (PROTECTED.includes(local.status)) {
+            protectedCount++
+            newAnomalies.push(local)
+            return
+          }
+          if (!UPDATEABLE.includes(local.status)) {
+            skippedCount++
+            newAnomalies.push(local)
+            return
+          }
+          if (handoverItem.updatedAt && local.updatedAt && new Date(handoverItem.updatedAt) < new Date(local.updatedAt)) {
+            skippedCount++
+            newAnomalies.push(local)
+            return
+          }
+          updatedCount++
+          newAnomalies.push({
+            ...local,
+            status: handoverItem.status,
+            remark: handoverItem.remark,
+            handler: handoverItem.handler,
+            updatedAt: new Date().toISOString(),
+          })
+        })
+
+        set({ anomalies: newAnomalies })
+
+        const history: HandoverApplyHistory = {
+          historyId: generateId('HHIST'),
+          packageId: pkg.packageId,
+          packageName: pkg.name,
+          appliedAt: new Date().toISOString(),
+          appliedBy: s.currentOperator,
+          updatedCount,
+          protectedCount,
+          skippedCount,
+          snapshot,
+          undone: false,
+          undoneAt: null,
+          undoneBy: null,
+        }
+        set(state => ({ handoverApplyHistory: [history, ...state.handoverApplyHistory].slice(0, 50) }))
+
+        get().addLog(LogActionType.HANDOVER_APPLY, `应用交接包：${pkg.name}`, {
+          packageId,
+          name: pkg.name,
+          updatedCount,
+          protectedCount,
+          skippedCount,
+          historyId: history.historyId,
+        })
+
+        return {
+          success: true,
+          message: `已应用交接包「${pkg.name}」。更新${updatedCount}条待处理/需上门记录，保护${protectedCount}条已人工复核记录，跳过${skippedCount}条冲突记录。`,
+          updatedCount,
+          protectedCount,
+          skippedCount,
+          historyId: history.historyId,
+        }
+      },
+
+      undoLastHandoverApply: (): HandoverUndoResult => {
+        const s = get()
+        const nonUndone = s.handoverApplyHistory.filter(h => !h.undone)
+        if (nonUndone.length === 0) {
+          return { success: false, message: '没有可撤销的交接包应用记录', blockedReason: 'NO_HISTORY', restoredCount: 0, protectedCount: 0 }
+        }
+        const last = nonUndone[0]
+        const PROTECTED = [ReviewStatus.CONFIRMED, ReviewStatus.IGNORED]
+        const currentAnomalyMap = new Map(s.anomalies.map(a => [a.anomalyId, a]))
+        const snapshotMap = new Map(last.snapshot.anomalies.map(a => [a.anomalyId, a]))
+
+        const mergedAnomalies: Anomaly[] = []
+        const processedKeys = new Set<string>()
+
+        last.snapshot.anomalies.forEach(sa => {
+          processedKeys.add(sa.anomalyId)
+          const current = currentAnomalyMap.get(sa.anomalyId)
+          if (current && PROTECTED.includes(current.status)) {
+            mergedAnomalies.push(current)
+          } else {
+            mergedAnomalies.push(sa)
+          }
+        })
+
+        s.anomalies.forEach(ca => {
+          if (!processedKeys.has(ca.anomalyId) && PROTECTED.includes(ca.status)) {
+            mergedAnomalies.push(ca)
+          }
+        })
+
+        const protectedAnomalyIds = new Set(
+          s.anomalies.filter(a => PROTECTED.includes(a.status)).map(a => a.anomalyId)
+        )
+        const protectedCount = Array.from(protectedAnomalyIds).length
+        const restoredCount = mergedAnomalies.filter(a => snapshotMap.has(a.anomalyId) && !PROTECTED.includes(a.status)).length
+
+        set(prev => ({
+          anomalies: mergedAnomalies,
+          handoverApplyHistory: prev.handoverApplyHistory.map(h =>
+            h.historyId === last.historyId
+              ? { ...h, undone: true, undoneAt: new Date().toISOString(), undoneBy: prev.currentOperator }
+              : h
+          ),
+        }))
+
+        get().addLog(LogActionType.HANDOVER_UNDO, `撤销交接包应用：${last.packageName}`, {
+          historyId: last.historyId,
+          packageId: last.packageId,
+          packageName: last.packageName,
+          restoredCount,
+          protectedCount,
+        })
+
+        return {
+          success: true,
+          message: `已撤销交接包「${last.packageName}」的应用，恢复${restoredCount}条记录，保护${protectedCount}条人工复核结果。`,
+          restoredCount,
+          protectedCount,
+        }
+      },
+
+      deleteHandoverPackage: (packageId) => {
+        const pkg = get().handoverPackages.find(p => p.packageId === packageId)
+        set(s => ({ handoverPackages: s.handoverPackages.filter(p => p.packageId !== packageId) }))
+        if (pkg) {
+          get().addLog(LogActionType.HANDOVER_EXPORT, `删除交接包：${pkg.name}`, {
+            packageId,
+            name: pkg.name,
+          })
+        }
+      },
 
       saveSchemeDraft: (name, description, qcRules, preCheckConfig) => {
         const operator = get().currentOperator
@@ -1484,6 +1754,8 @@ export const useAppStore = create<AppState>()(
         importBatches: state.importBatches,
         schemeDrafts: state.schemeDrafts,
         sandboxApplyHistory: state.sandboxApplyHistory,
+        handoverPackages: state.handoverPackages,
+        handoverApplyHistory: state.handoverApplyHistory,
       }),
     }
   )

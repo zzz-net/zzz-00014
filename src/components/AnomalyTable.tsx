@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronUp, User, MapPin, Stethoscope, Clock } from 'lucide-react'
+import { ChevronDown, ChevronUp, User, MapPin, Stethoscope, Clock, CheckSquare, Square } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Anomaly, AnomalyType, AnomalyTypeLabels, ReviewStatus, ReviewStatusLabels } from '@/types'
 import { useAppStore } from '@/store'
@@ -27,10 +27,13 @@ interface AnomalyRowProps {
 function AnomalyRow({ anomaly }: AnomalyRowProps) {
   const [expanded, setExpanded] = useState(false)
   const updateAnomaly = useAppStore(s => s.updateAnomaly)
+  const toggleAnomalySelection = useAppStore(s => s.toggleAnomalySelection)
+  const selectedAnomalyIds = useAppStore(s => s.selectedAnomalyIds)
   const [editRemark, setEditRemark] = useState(anomaly.remark)
   const [handler, setHandler] = useState(anomaly.handler)
 
   const typeConfig = AnomalyTypeConfig[anomaly.type]
+  const isSelected = selectedAnomalyIds.includes(anomaly.anomalyId)
 
   const formatDate = (iso: string) => {
     if (!iso) return '-'
@@ -44,9 +47,19 @@ function AnomalyRow({ anomaly }: AnomalyRowProps) {
   return (
     <>
       <tr
-        className={cn('border-l-4 transition-colors hover:bg-gray-50/80', typeConfig.color)}
+        className={cn('border-l-4 transition-colors hover:bg-gray-50/80', typeConfig.color, isSelected && 'bg-blue-50/60')}
       >
-        <td className="px-4 py-3">
+        <td className="px-3 py-3 w-10">
+          <button
+            onClick={() => toggleAnomalySelection(anomaly.anomalyId)}
+            className="p-0.5 hover:bg-white/80 rounded transition-colors"
+          >
+            {isSelected
+              ? <CheckSquare className="w-4 h-4 text-blue-600" />
+              : <Square className="w-4 h-4 text-gray-400" />}
+          </button>
+        </td>
+        <td className="px-4 py-3 w-10">
           <button
             onClick={() => setExpanded(!expanded)}
             className="p-1 hover:bg-white/60 rounded transition-colors"
@@ -104,7 +117,7 @@ function AnomalyRow({ anomaly }: AnomalyRowProps) {
       </tr>
       {expanded && (
         <tr className="bg-gray-50 border-l-4 border-gray-300">
-          <td colSpan={7} className="px-8 py-4">
+          <td colSpan={8} className="px-8 py-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1.5">处理人</label>
@@ -184,7 +197,12 @@ function AnomalyRow({ anomaly }: AnomalyRowProps) {
 
 export function AnomalyTable() {
   const getFilteredAnomalies = useAppStore(s => s.getFilteredAnomalies)
+  const selectedAnomalyIds = useAppStore(s => s.selectedAnomalyIds)
+  const selectAllFilteredAnomalies = useAppStore(s => s.selectAllFilteredAnomalies)
+  const clearAnomalySelection = useAppStore(s => s.clearAnomalySelection)
   const anomalies = getFilteredAnomalies()
+
+  const allSelected = anomalies.length > 0 && anomalies.every(a => selectedAnomalyIds.includes(a.anomalyId))
 
   if (anomalies.length === 0) {
     return (
@@ -200,15 +218,40 @@ export function AnomalyTable() {
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-      <div className="px-5 py-3 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between">
-        <p className="text-sm text-gray-600">
-          共 <span className="font-semibold text-gray-900">{anomalies.length}</span> 条异常记录
-        </p>
+      <div className="px-5 py-3 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-3">
+          <p className="text-sm text-gray-600">
+            共 <span className="font-semibold text-gray-900">{anomalies.length}</span> 条异常记录
+            {selectedAnomalyIds.length > 0 && (
+              <span className="ml-2 text-blue-600">
+                已选 <span className="font-semibold">{selectedAnomalyIds.length}</span> 条
+              </span>
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={allSelected ? clearAnomalySelection : selectAllFilteredAnomalies}
+            className="text-xs px-2.5 py-1.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 transition-colors flex items-center gap-1.5"
+          >
+            {allSelected ? <CheckSquare className="w-3.5 h-3.5 text-blue-600" /> : <Square className="w-3.5 h-3.5 text-gray-400" />}
+            {allSelected ? '取消全选' : '全选当前筛选'}
+          </button>
+          {selectedAnomalyIds.length > 0 && (
+            <button
+              onClick={clearAnomalySelection}
+              className="text-xs px-2.5 py-1.5 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
+            >
+              清除选择
+            </button>
+          )}
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-200 text-xs text-gray-500 uppercase tracking-wide">
+              <th className="px-3 py-3 text-left w-10"></th>
               <th className="px-4 py-3 text-left w-10"></th>
               <th className="px-4 py-3 text-left">异常类型</th>
               <th className="px-4 py-3 text-left">居民</th>

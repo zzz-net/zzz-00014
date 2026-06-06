@@ -45,6 +45,11 @@ const ActionColor: Record<LogActionType, string> = {
   [LogActionType.SANDBOX_PREVIEW]: 'bg-sky-100 text-sky-700 border-sky-200',
   [LogActionType.SANDBOX_APPLY]: 'bg-green-100 text-green-700 border-green-200',
   [LogActionType.SANDBOX_UNDO]: 'bg-orange-100 text-orange-700 border-orange-200',
+  [LogActionType.HANDOVER_CREATE]: 'bg-indigo-100 text-indigo-700 border-indigo-200',
+  [LogActionType.HANDOVER_EXPORT]: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  [LogActionType.HANDOVER_IMPORT]: 'bg-violet-100 text-violet-700 border-violet-200',
+  [LogActionType.HANDOVER_APPLY]: 'bg-sky-100 text-sky-700 border-sky-200',
+  [LogActionType.HANDOVER_UNDO]: 'bg-amber-100 text-amber-700 border-amber-200',
 }
 
 function formatDate(iso: string) {

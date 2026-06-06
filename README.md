@@ -21,6 +21,7 @@
 - ✅ **异常复核**: 标记待处理、已确认、忽略、需上门四种状态，支持备注和处理人
 - 🛡️ **质控规则配置**: 可配置逾期阈值、血压血糖上下限、未预约匹配窗口等规则，支持版本管理
 - ⏮️ **规则回放**: 规则版本历史管理，预览差异后切换版本，保护人工复核结果
+- 🧪 **方案沙盒**: 护士长可把规则另存为草稿，用现有数据预跑看差异，确认后再应用；支持 JSON 导入导出；可撤销最近应用并保留人工复核结果
 - 📒 **操作日志**: 记录导入、规则变更、批量重算、导出、复核状态修改，支持筛选导出
 - 💾 **本地持久化**: 所有数据（含复核状态、规则、日志）存储在 localStorage，刷新重启不丢失
 - 📤 **数据导出**: JSON/CSV 格式导出当前筛选结果
@@ -661,6 +662,160 @@ npm run build
    - 沙盒测试7：应用方案结果字段 + 操作日志字段（操作者/时间/差异摘要/来源）
    - 沙盒测试8：撤销应用时 CONFIRMED / IGNORED 状态全部保留不被覆盖
    - 沙盒测试9：8 种沙盒操作日志类型标签完整性
+
+---
+
+## 异常复核交接包（新增功能）
+
+护士长可在异常看板按**当前筛选结果**或**勾选记录**生成交接包，内容包含异常列表、复核状态、备注、责任护士、当前规则版本和关联导入批次摘要，方便交给下一班继续处理。交接包跨刷新保留，可导出/导入 JSON/CSV，导入时校验版本、缺字段、不存在 anomalyId、旧状态冲突，不静默覆盖已确认/已忽略记录，应用后可撤销最近一次且同样保护人工复核结果。
+
+### 场景 A：按筛选结果或勾选记录生成交接包
+
+1. 导入样例数据后，切换到"异常看板" Tab
+2. 设置筛选条件（如仅选择站点"中心站"），记录筛选后的异常数量 N
+3. 点击顶部 **"交接包"** 按钮（位于"重算"左侧）
+4. 切到 **"生成交接包"** Tab
+5. 验证：
+   - **当前筛选结果**卡片显示 `N` 条
+   - 如在异常列表已勾选若干条，**勾选记录**卡片显示对应数量
+6. 填写名称（必填），选择"当前筛选结果"，填写说明，点击"生成交接包"
+7. 切到"交接包列表"，验证：
+   - 新生成的包出现在列表顶部
+   - 徽标显示"筛选结果"和 `N` 条异常
+   - 展开详情可见：关联导入批次摘要、筛选条件摘要、异常列表（含居民、状态、责任护士、备注）
+8. 回到异常列表，手动勾选若干条，再次进入交接包→生成交接包
+9. 选择"勾选记录"，点击生成
+10. 验证：包徽标显示"勾选记录"，异常数量与勾选一致
+
+### 场景 B：持久化跨刷新保留
+
+1. 生成 2 个交接包（筛选结果 + 勾选记录各一）
+2. **刷新浏览器**（F5）
+3. 再次打开"交接包"对话框
+4. 验证：
+   - "交接包列表"中 2 个包依然存在，顺序、字段、展开详情完整
+   - DevTools → Application → Local Storage 中 `chronic-disease-review-board` 键值包含 `handoverPackages` 数组
+5. 应用其中一个交接包（见场景 E），再次刷新
+6. 验证：`handoverApplyHistory` 数组同样保留
+
+### 场景 C：导出 JSON/CSV 字段完整
+
+1. 在交接包列表中点击某条交接包行的下载按钮
+2. 选择 **"导出 JSON"**，用文本编辑器打开
+3. 验证 JSON 顶层 13 个字段齐全：
+   - `schemaVersion`（必须为 `"1.0.0"`）、`packageId`、`name`、`description`
+   - `sourceMode`（filter / selected）、`createdAt`、`createdBy`
+   - `ruleVersion`、`ruleVersionName`、`qcRules`
+   - `filtersSummary`、`importBatchSummaries`、`anomalies`
+4. 验证 `anomalies` 每条 9 个字段：`anomalyId / residentId / residentName / type / status / remark / handler / updatedAt / site`
+5. 同样选择 **"导出 CSV"**，打开文件验证 12 列中文表头：
+   - 异常ID、居民编号、姓名、站点、异常类型、复核状态、责任护士、备注、更新时间、异常描述、护士、关联记录类型
+
+### 场景 D：导入校验 — 版本、缺字段、anomalyId 不存在、状态较旧冲突
+
+准备一个场景 A 中导出的 JSON 进行以下修改测试：
+
+**D1. schemaVersion 版本不匹配**
+1. 修改 JSON `schemaVersion` 为 `"0.1.0"`
+2. 在交接包→"导入交接包" Tab，上传该文件
+3. 验证：
+   - 提示显示 `[VERSION_MISMATCH]` 黄色警告，说明系统期望 `1.0.0`，建议升级 JSON 文件
+   - 导入仍成功（警告不阻断），列表出现新包
+
+**D2. 缺失必填字段**
+1. 删除 JSON 顶层 `anomalies` 字段
+2. 导入
+3. 验证：
+   - 导入失败，红色提示 `[MISSING_FIELD] 缺少必填字段 anomalies`
+   - 附建议"请确保交接包 JSON 顶层包含 anomalies 数组"
+   - 列表未新增条目
+
+**D3. anomalyId 在本地不存在**
+1. 修改 JSON 中 `anomalies[0].anomalyId` 为不存在的 `"ANOMALY_99999"`
+2. 导入
+3. 验证：
+   - 导入成功（warning 级别，不阻断），显示黄色警告
+   - `[ANOMALY_NOT_FOUND]` 指明 anomalyId，提示"该异常在当前本地数据中不存在，应用时将跳过"
+   - `notFoundCount` 汇总统计显示 1
+
+**D4. 状态较旧（时间戳冲突）**
+1. 在异常看板中，将某条异常状态从"待处理"改为"已确认"（记录其 anomalyId）
+2. 导出一个交接包（包含该条）
+3. 再在异常看板中，把该条状态改为"忽略"（时间戳更新）
+4. 把刚导出的 JSON 再导入
+5. 验证：
+   - 导入出现 `[STATUS_OLDER]` 黄色警告，说明"当前记录状态比交接包更新，应用时将跳过"
+   - `olderStatusCount` 汇总显示 1
+
+**D5. 受保护状态（已确认/忽略）**
+1. 把某条异常改为"已确认"，备注写 "护士长人工确认"
+2. 导出一个包含该条的交接包，然后把 JSON 中该条状态改为"待处理"，备注清空
+3. 导入修改后的 JSON
+4. 验证：
+   - 出现 `[PROTECTED_STATUS]` 黄色警告，说明"本地记录为 CONFIRMED 已受保护，不会被覆盖"
+   - `protectedCount` 汇总显示 1
+
+### 场景 E：应用交接包 — 仅更新待处理/需上门，保护已确认/已忽略
+
+1. 准备一批异常：
+   - A：待处理
+   - B：需上门
+   - C：已确认（备注 "人工确认"）
+   - D：忽略
+2. 生成一个包含 A、B、C、D 四条的交接包，在 JSON 中把四条的状态都改成"需上门"，handler 改为"李护士"，remark 改为"夜班交接处理"
+3. 把修改后的 JSON 导入
+4. 在交接包列表点击该包的 **"应用"** 按钮，弹出确认框
+5. 验证确认框说明：
+   - "仅更新待处理和需上门的记录；已确认/忽略的人工复核结果不会被覆盖"
+6. 点击"确认应用"
+7. 回到异常看板，找到 A、B、C、D 四条
+8. 验证：
+   - A 和 B（原待处理/需上门）状态变为"需上门"，handler 为"李护士"，remark 为"夜班交接处理" ✅
+   - C 仍为"已确认"，备注"人工确认"完好 ✅（受保护未覆盖）
+   - D 仍为"忽略" ✅（受保护未覆盖）
+9. 查看应用结果：更新 2 · 保护 2 · 跳过 0
+
+### 场景 F：撤销最近一次应用 — 同样保护人工复核
+
+1. 完成场景 E 后，交接包对话框顶部出现 **"撤销最近应用"** 橙色按钮
+2. 在撤销前，先把 A 条异常状态手工改为"已确认"（写备注"再次确认"）
+3. 点击"撤销最近应用"
+4. 验证：
+   - 顶部提示"已撤销交接包 X 的应用，恢复 N 条记录，保护 M 条人工复核结果"
+   - B 条异常回到应用前的"需上门"原始状态
+   - **A 条仍然是"已确认"**，备注"再次确认"完好 ✅（即使在快照中 A 是"待处理"，也不覆盖人工复核结果）
+   - C、D 依然是"已确认"和"忽略" ✅
+5. 再次点击"撤销最近应用"，提示"没有可撤销的交接包应用记录"
+
+### 场景 G：操作日志 — 5 种交接操作全覆盖
+
+依次执行以下操作，在"操作日志" Tab 验证：
+
+| 操作类型 | 触发方式 | 日志 details 应包含 |
+|---|---|---|
+| HANDOVER_CREATE | 生成交接包 | `packageId / name / sourceMode / anomalyCount / ruleVersion` |
+| HANDOVER_EXPORT | 导出 JSON / CSV | `packageId / name / format / anomalyCount` |
+| HANDOVER_IMPORT | 导入 JSON | `packageId / name / sourceAnomalyCount / applicableCount / protectedCount / notFoundCount / olderStatusCount` |
+| HANDOVER_APPLY | 应用交接包 | `packageId / name / updatedCount / protectedCount / skippedCount / historyId` |
+| HANDOVER_UNDO | 撤销应用 | `historyId / packageId / packageName / restoredCount / protectedCount` |
+
+验证：5 种类型均有中文标签（生成交接包、导出交接包、导入交接包、应用交接包、撤销交接包应用），且颜色正确。
+
+### 场景 H：命令行自动化回归测试
+
+1. 在终端执行：`npm run test:qc`
+2. 验证：终端打印 **全部通过**，其中包含 **11 组交接包专项测试**：
+   - 交接包测试1：`HandoverPackage` / `HandoverAnomalyItem` / `HandoverImportBatchSummary` / `HandoverFiltersSummary` 数据模型字段完整性
+   - 交接包测试2：按**筛选结果**生成交接包（`sourceMode=filter`），`filtersSummary` 非空且 `anomalies.length` 与筛选结果一致
+   - 交接包测试3：按**勾选记录**生成交接包（`sourceMode=selected`），`filtersSummary` 为 `null`
+   - 交接包测试4：localStorage 持久化（`handoverPackages` / `handoverApplyHistory` 在 persist partialize 中）
+   - 交接包测试5：导入校验 — `INVALID_JSON` / `MISSING_FIELD` / `VERSION_MISMATCH` 三类错误码
+   - 交接包测试6：导入校验 — `ANOMALY_NOT_FOUND` / `STATUS_OLDER` / `PROTECTED_STATUS` 三类 warning
+   - 交接包测试7：`applicableCount / protectedCount / notFoundCount / olderStatusCount` 四类汇总计数正确
+   - 交接包测试8：应用交接包 — 仅 `PENDING`/`NEED_HOME_VISIT` 被更新，`CONFIRMED`/`IGNORED` 保护
+   - 交接包测试9：应用交接包时，本地 `updatedAt` 较新的记录被跳过（`skippedCount`）
+   - 交接包测试10：撤销应用时，`CONFIRMED`/`IGNORED` 仍保持当前值（不被快照覆盖）
+   - 交接包测试11：5 种 `HANDOVER_*` 操作日志类型标签中文字段完整性
 
 ---
 
