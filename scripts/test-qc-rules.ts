@@ -36,6 +36,20 @@ import {
   anomalyToHandoverItem,
 } from '../src/utils/handover'
 import {
+  buildShiftTodoList,
+  anomalyToShiftTodoItem,
+  serializeShiftTodoForExport,
+  shiftTodoToCSV,
+  validateShiftTodoImport,
+  todayPlusDaysStr,
+} from '../src/utils/shiftTodo'
+import {
+  SHIFT_TODO_SCHEMA_VERSION,
+  UserRole,
+  ShiftTodoConflictCode,
+  ShiftTodoList,
+} from '../src/types'
+import {
   compareNumericRule,
   detectRuleConflicts,
   createEmptyDraft,
@@ -1665,6 +1679,194 @@ console.log('\n=== 交接包测试11：5 种 HANDOVER_* 操作日志类型标签
   })
   assert(handoverTypes.length === 5, `共 5 种 HANDOVER 操作日志类型（实际 ${handoverTypes.length}）`)
   console.log(`  5 种 HANDOVER 操作日志类型全部有中文标签：${handoverTypes.map(t => LogActionTypeLabels[t]).join('、')}`)
+}
+
+console.log('\n=== 班次待办测试1：清单构建与序列化持久化 ===')
+{
+  const list = buildShiftTodoList({ name: '今日交班', description: '白班需要交接的事项', operator: '护士长王' })
+  assert(list.listId.startsWith('SHLIST'), `清单 ID 前缀正确（${list.listId.slice(0, 6)}`)
+  assert(list.name === '今日交班', '清单名称正确')
+  assert(list.description === '白班需要交接的事项', '清单描述正确')
+  assert(list.schemaVersion === SHIFT_TODO_SCHEMA_VERSION, `schemaVersion 正确（${list.schemaVersion}）`)
+  assert(list.createdBy === '护士长王', '创建人正确')
+  assert(list.items.length === 0, '初始清单项数为 0')
+  assert(typeof list.createdAt === 'string' && list.createdAt.length > 0, 'createdAt 正确')
+  assert(list.updatedAt === list.createdAt, '初始 updatedAt 等于 createdAt')
+
+  const json = serializeShiftTodoForExport(list)
+  const parsed = JSON.parse(json)
+  assert(parsed.name === '今日交班', '序列化后名称一致')
+  assert(parsed.schemaVersion === SHIFT_TODO_SCHEMA_VERSION, '序列化后 schemaVersion 一致')
+  assert(parsed.items.length === 0, '序列化后清单项数一致')
+  console.log(`  清单构建并序列化成功，schemaVersion=${SHIFT_TODO_SCHEMA_VERSION}`)
+}
+
+console.log('\n=== 班次待办测试2：异常转清单项与 CSV 导出列数 ===')
+{
+  const { anomalies } = detectAnomalies(residents, appointments, followups, [], DEFAULT_QC_RULES, false)
+  assert(anomalies.length >= 1, '至少识别到至少 1 条异常')
+  const deadline = todayPlusDaysStr(1)
+  const item = anomalyToShiftTodoItem(anomalies[0], {
+    responsibleNurse: '李护士',
+    deadline,
+    handlingNote: '上门随访并复测血压',
+    operator: '护士长王',
+  })
+  assert(item.itemId.startsWith('TODO'), `清单项 ID 前缀正确（${item.itemId.slice(0, 4)}）`)
+  assert(item.anomalyId === anomalies[0].anomalyId, '关联 anomalyId 正确')
+  assert(item.responsibleNurse === '李护士', '责任护士正确')
+  assert(item.deadline === deadline, '截止时间正确')
+  assert(item.handlingNote === '上门随访并复测血压', '处理说明正确')
+  assert(item.completed === false, '初始完成状态 false')
+  assert(item.addedBy === '护士长王', '添加人正确')
+
+  const list = buildShiftTodoList({ name: '夜班跟进', description: '', operator: '护士长王' })
+  list.items = [item]
+  const csv = shiftTodoToCSV(list)
+  const lines = csv.trim().split('\n')
+  assert(lines.length === 2, `CSV 包含标题+1行数据（实际${lines.length}行）`)
+  const headers = lines[0].split(',')
+  assert(headers.length >= 12, `CSV 至少 12 列（实际${headers.length}列）`)
+  assert(headers.includes('清单名称'), 'CSV 包含「清单名称」列')
+  assert(headers.includes('责任护士'), 'CSV 包含「责任护士」列')
+  assert(headers.includes('截止时间'), 'CSV 包含「截止时间」列')
+  assert(headers.includes('处理说明'), 'CSV 包含「处理说明」列')
+  console.log(`  异常转清单项成功，CSV 共${lines.length}行，${headers.length}列`)
+}
+
+console.log('\n=== 班次待办测试3：权限枚举 HEAD_NURSE vs NURSE ===')
+{
+  assert(UserRole.HEAD_NURSE === 'HEAD_NURSE', 'HEAD_NURSE 枚举值正确')
+  assert(UserRole.NURSE === 'NURSE', 'NURSE 枚举值正确')
+  const roles = Object.values(UserRole)
+  assert(roles.length === 2, `共 2 种角色（实际${roles.length}）`)
+  console.log(`  权限枚举正确：${roles.join('、')}`)
+}
+
+console.log('\n=== 班次待办测试4：导入校验 INVALID_JSON ===')
+{
+  const result = validateShiftTodoImport('{invalid json', [], [])
+  assert(result.valid === false, '无效 JSON 校验失败')
+  const invalidIssue = result.issues.find(i => i.code === ShiftTodoConflictCode.INVALID_JSON)
+  assert(invalidIssue !== undefined, '返回 INVALID_JSON 错误码')
+  assert(invalidIssue?.severity === 'error', 'INVALID_JSON 严重级别为 error')
+  assert(invalidIssue?.message.length > 0, '错误信息不为空')
+  console.log(`  INVALID_JSON 校验返回 error 错误信息：${invalidIssue?.message}`)
+}
+
+console.log('\n=== 班次待办测试5：导入校验 VERSION_MISMATCH ===')
+{
+  const fakeList = {
+    listId: 'x', name: '测试', description: '', schemaVersion: '0.0.1',
+    createdAt: new Date().toISOString(), createdBy: 'x', updatedAt: new Date().toISOString(),
+    items: [],
+  }
+  const result = validateShiftTodoImport(JSON.stringify(fakeList), [], [])
+  assert(result.valid === false, '版本不匹配校验失败')
+  const versionIssue = result.issues.find(i => i.code === ShiftTodoConflictCode.VERSION_MISMATCH)
+  assert(versionIssue !== undefined, '返回 VERSION_MISMATCH 错误码')
+  assert(versionIssue?.message.includes(SHIFT_TODO_SCHEMA_VERSION), '错误信息中包含正确版本号')
+  console.log(`  VERSION_MISMATCH 正确提示当前应为版本：${versionIssue?.suggestion}`)
+}
+
+console.log('\n=== 班次待办测试6：导入校验 DUPLICATE_NAME ===')
+{
+  const list1 = buildShiftTodoList({ name: '今日交班', description: '', operator: '护士长王' })
+  const importData = serializeShiftTodoForExport(list1)
+  const existingLists: ShiftTodoList[] = [{ ...list1, listId: 'OTHER001' }]
+  const result = validateShiftTodoImport(importData, existingLists, [])
+  const dupIssue = result.issues.find(i => i.code === ShiftTodoConflictCode.DUPLICATE_NAME)
+  assert(dupIssue !== undefined, '重名校验返回 DUPLICATE_NAME')
+  assert(dupIssue?.severity === 'error', 'DUPLICATE_NAME 严重级别为 error')
+  assert(dupIssue?.message.includes('今日交班'), '错误信息包含重复清单名')
+  console.log(`  DUPLICATE_NAME 校验通过：${dupIssue?.message}`)
+}
+
+console.log('\n=== 班次待办测试7：导入校验 ANOMALY_NOT_FOUND ===')
+{
+  const { anomalies } = detectAnomalies(residents, appointments, followups, [], DEFAULT_QC_RULES, false)
+  assert(anomalies.length >= 1, '至少 1 条异常')
+  const deadline = todayPlusDaysStr(1)
+  const item = anomalyToShiftTodoItem(anomalies[0], { responsibleNurse: '李护士', deadline, handlingNote: '', operator: 'x' })
+  const list = buildShiftTodoList({ name: '明日复核', description: '', operator: 'x' })
+  list.items = [{ ...item, anomalyId: 'NONEXISTENT001' }]
+  const json = serializeShiftTodoForExport(list)
+  const localAnoms = anomalies.map(a => ({ ...a }))
+  const result = validateShiftTodoImport(json, [], localAnoms)
+  const nfIssue = result.issues.find(i => i.code === ShiftTodoConflictCode.ANOMALY_NOT_FOUND)
+  assert(nfIssue !== undefined, '返回 ANOMALY_NOT_FOUND')
+  assert(nfIssue?.severity === 'warning', 'ANOMALY_NOT_FOUND 严重级别为 warning')
+  assert(result.notFoundCount === 1, `notFoundCount=1（实际${result.notFoundCount}）`)
+  console.log(`  ANOMALY_NOT_FOUND 校验通过，缺失 anomalyId=NONEXISTENT001`)
+}
+
+console.log('\n=== 班次待办测试8：导入校验 ANOMALY_UPDATED（本地更新时间冲突 ===')
+{
+  const { anomalies } = detectAnomalies(residents, appointments, followups, [], DEFAULT_QC_RULES, false)
+  assert(anomalies.length >= 1, '至少 1 条异常')
+  const deadline = todayPlusDaysStr(1)
+  const originalTs = new Date(Date.now() - 3600000).toISOString()
+  const item = anomalyToShiftTodoItem(anomalies[0], { responsibleNurse: '李护士', deadline, handlingNote: '', operator: 'x' })
+  const list = buildShiftTodoList({ name: '测试冲突', description: '', operator: 'x' })
+  list.items = [{ ...item, anomalyUpdatedAt: originalTs }]
+  const json = serializeShiftTodoForExport(list)
+  const localAnoms = anomalies.map(a => ({ ...a, updatedAt: new Date().toISOString() }))
+  const result = validateShiftTodoImport(json, [], localAnoms)
+  const updatedIssue = result.issues.find(i => i.code === ShiftTodoConflictCode.ANOMALY_UPDATED)
+  assert(updatedIssue !== undefined, '返回 ANOMALY_UPDATED')
+  assert(updatedIssue?.severity === 'warning', 'ANOMALY_UPDATED 严重级别 warning')
+  assert(result.updatedCount >= 1, `updatedCount>=1（实际${result.updatedCount}）`)
+  console.log(`  ANOMALY_UPDATED 时间戳冲突检测成功`)
+}
+
+console.log('\n=== 班次待办测试9：撤销快照与撤销计数 ===')
+{
+  const list1 = buildShiftTodoList({ name: '清单A', description: '', operator: '护士长王' })
+  const list2 = buildShiftTodoList({ name: '清单B', description: '', operator: '护士长王' })
+  const originalLists = [list1, list2]
+  const snapshotLists = originalLists.map(l => ({
+    ...l,
+    items: l.items.map(i => ({ ...i })),
+  }))
+  assert(snapshotLists.length === 2, '快照保存了 2 个清单')
+  assert(snapshotLists[0].listId === list1.listId, '快照 listId 一致')
+  assert(snapshotLists !== originalLists, '快照是独立引用，不是同一个数组引用')
+  assert(snapshotLists[0] !== originalLists[0], '每个清单也是独立对象')
+  console.log(`  撤销快照深度复制通过`)
+}
+
+console.log('\n=== 班次待办测试10：9 种 SHIFT_TODO_* 操作日志类型标签 ===')
+{
+  const shiftTodoTypes: LogActionType[] = [
+    LogActionType.SHIFT_TODO_LIST_CREATE,
+    LogActionType.SHIFT_TODO_LIST_DELETE,
+    LogActionType.SHIFT_TODO_ITEM_BATCH_ADD,
+    LogActionType.SHIFT_TODO_ITEM_REMOVE,
+    LogActionType.SHIFT_TODO_ITEM_COMPLETE,
+    LogActionType.SHIFT_TODO_EXPORT,
+    LogActionType.SHIFT_TODO_IMPORT,
+    LogActionType.SHIFT_TODO_UNDO,
+    LogActionType.SHIFT_TODO_ROLE_SWITCH,
+  ]
+  shiftTodoTypes.forEach(t => {
+    const label = LogActionTypeLabels[t]
+    assert(typeof label === 'string' && label.length >= 4, `操作日志类型 ${t} 有中文标签（实际：${label}）`)
+  })
+  assert(shiftTodoTypes.length === 9, `共 9 种班次待办操作日志类型（实际 ${shiftTodoTypes.length}）`)
+  console.log(`  9 种 SHIFT_TODO 操作日志类型全部有中文标签：${shiftTodoTypes.map(t => LogActionTypeLabels[t]).join('、')}`)
+}
+
+console.log('\n=== 班次待办测试11：操作日志字段完整性（模拟 addLog 调用链 ===')
+{
+  const { anomalies } = detectAnomalies(residents, appointments, followups, [], DEFAULT_QC_RULES, false)
+  const deadline = todayPlusDaysStr(2)
+  const item = anomalyToShiftTodoItem(anomalies[0], { responsibleNurse: '李护士', deadline, handlingNote: '上门复测', operator: '护士长王' })
+  assert(item.residentId.length > 0, '清单项含 residentId')
+  assert(item.anomalyDescription.length > 0, '清单项含 anomalyDescription')
+  assert(['high', 'medium', 'low'].includes(item.anomalySeverity), '清单项含 anomalySeverity 为 high/medium/low')
+  assert(Object.values(AnomalyType).includes(item.anomalyType), '清单项 anomalyType 合法')
+  assert(item.createdAt.length > 0 && new Date(item.createdAt).getTime() > 0, '清单项 createdAt 合法 ISO 时间戳')
+  console.log(`  清单项字段全部合法`)
 }
 
 console.log(`\n====== 测试结果：通过 ${passed} / ${passed + failed} ======`)

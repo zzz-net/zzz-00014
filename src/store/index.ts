@@ -42,6 +42,12 @@ import {
   HandoverApplyResult,
   HandoverUndoResult,
   HandoverApplyHistory,
+  UserRole,
+  ShiftTodoList,
+  ShiftTodoImportValidationResult,
+  ShiftTodoUndoResult,
+  ShiftTodoUndoHistory,
+  ShiftTodoUndoSnapshot,
 } from '@/types'
 import { parseCSV, generateCSV, downloadFile } from '@/utils/csv'
 import { validateData } from '@/utils/validator'
@@ -58,6 +64,13 @@ import {
   handoverToCSV,
   validateHandoverImport,
 } from '@/utils/handover'
+import {
+  buildShiftTodoList,
+  anomalyToShiftTodoItem,
+  serializeShiftTodoForExport,
+  shiftTodoToCSV,
+  validateShiftTodoImport,
+} from '@/utils/shiftTodo'
 
 interface AppState {
   residents: Resident[]
@@ -144,6 +157,24 @@ interface AppState {
   previewSchemeDraft: (draftId: string) => ReturnType<typeof calculateRuleDiffPreview> | null
   applySchemeDraft: (draftId: string) => SandboxApplyResult
   undoLastSandboxApply: () => SandboxUndoResult
+  currentRole: UserRole
+  setCurrentRole: (role: UserRole) => void
+  shiftTodoLists: ShiftTodoList[]
+  shiftTodoUndoHistory: ShiftTodoUndoHistory[]
+  createShiftTodoList: (name: string, description: string) => ShiftTodoList | null
+  deleteShiftTodoList: (listId: string) => boolean
+  batchAddAnomaliesToShiftTodo: (params: {
+    listId: string
+    sourceMode: 'filter' | 'selected'
+    responsibleNurse: string
+    deadline: string
+    handlingNote: string
+  }) => { success: boolean; message: string; addedCount: number }
+  removeShiftTodoItem: (listId: string, itemId: string) => boolean
+  toggleShiftTodoItemComplete: (listId: string, itemId: string) => boolean
+  exportShiftTodoList: (listId: string, format: 'json' | 'csv') => void
+  importShiftTodoList: (jsonText: string) => ShiftTodoImportValidationResult
+  undoLastShiftTodoBatchAction: () => ShiftTodoUndoResult
 }
 
 const INITIAL_VERSIONS: RuleVersion[] = [
@@ -186,6 +217,9 @@ export const useAppStore = create<AppState>()(
       handoverPackages: [],
       handoverApplyHistory: [],
       selectedAnomalyIds: [],
+      currentRole: UserRole.HEAD_NURSE,
+      shiftTodoLists: [],
+      shiftTodoUndoHistory: [],
 
       toggleAnomalySelection: (anomalyId) => {
         set(s => {
@@ -435,6 +469,281 @@ export const useAppStore = create<AppState>()(
             packageId,
             name: pkg.name,
           })
+        }
+      },
+
+      setCurrentRole: (role) => {
+        set({ currentRole: role })
+      },
+
+      createShiftTodoList: (name, description) => {
+        if (get().currentRole !== UserRole.HEAD_NURSE) return null
+        if (!name.trim()) return null
+        const operator = get().currentOperator
+        const list = buildShiftTodoList({ name: name.trim(), description: description.trim(), operator })
+        set(s => ({ shiftTodoLists: [list, ...s.shiftTodoLists].slice(0, 100) }))
+        get().addLog(LogActionType.SHIFT_TODO_LIST_CREATE, `新建班次待办清单：${list.name}`, {
+          listId: list.listId,
+          name: list.name,
+          itemCount: 0,
+        })
+        return list
+      },
+
+      deleteShiftTodoList: (listId) => {
+        if (get().currentRole !== UserRole.HEAD_NURSE) return false
+        const list = get().shiftTodoLists.find(l => l.listId === listId)
+        if (!list) return false
+        set(s => ({ shiftTodoLists: s.shiftTodoLists.filter(l => l.listId !== listId) }))
+        get().addLog(LogActionType.SHIFT_TODO_LIST_DELETE, `删除班次待办清单：${list.name}`, {
+          listId,
+          name: list.name,
+          itemCount: list.items.length,
+        })
+        return true
+      },
+
+      batchAddAnomaliesToShiftTodo: ({ listId, sourceMode, responsibleNurse, deadline, handlingNote }) => {
+        if (get().currentRole !== UserRole.HEAD_NURSE) {
+          return { success: false, message: '仅护士长可批量加入待办', addedCount: 0 }
+        }
+        const s = get()
+        const list = s.shiftTodoLists.find(l => l.listId === listId)
+        if (!list) return { success: false, message: '清单不存在', addedCount: 0 }
+
+        const anomalies = sourceMode === 'selected'
+          ? s.anomalies.filter(a => s.selectedAnomalyIds.includes(a.anomalyId))
+          : s.getFilteredAnomalies()
+
+        if (anomalies.length === 0) {
+          return { success: false, message: sourceMode === 'filter' ? '当前筛选结果为空' : '请先勾选至少一条记录', addedCount: 0 }
+        }
+
+        const existingAnomalyIds = new Set(list.items.map(i => i.anomalyId))
+        const newAnomalies = anomalies.filter(a => !existingAnomalyIds.has(a.anomalyId))
+        if (newAnomalies.length === 0) {
+          return { success: false, message: '这些异常记录已全部在清单中', addedCount: 0 }
+        }
+
+        const operator = s.currentOperator
+        const snapshot: ShiftTodoUndoSnapshot = {
+          lists: s.shiftTodoLists.map(l => ({
+            ...l,
+            items: l.items.map(i => ({ ...i })),
+          })),
+        }
+
+        const newItems = newAnomalies.map(a => anomalyToShiftTodoItem(a, {
+          responsibleNurse,
+          deadline,
+          handlingNote,
+          operator,
+        }))
+
+        set(prev => ({
+          shiftTodoLists: prev.shiftTodoLists.map(l =>
+            l.listId === listId
+              ? { ...l, items: [...l.items, ...newItems], updatedAt: new Date().toISOString() }
+              : l
+          ),
+        }))
+
+        const history: ShiftTodoUndoHistory = {
+          historyId: generateId('STHIST'),
+          actionType: 'BATCH_ADD',
+          listId,
+          listName: list.name,
+          actionAt: new Date().toISOString(),
+          actionBy: operator,
+          snapshot,
+          addedItemCount: newItems.length,
+          undone: false,
+          undoneAt: null,
+          undoneBy: null,
+        }
+        set(prev => ({ shiftTodoUndoHistory: [history, ...prev.shiftTodoUndoHistory].slice(0, 50) }))
+
+        get().addLog(LogActionType.SHIFT_TODO_ITEM_BATCH_ADD, `批量加入待办：${list.name}（${newItems.length}条）`, {
+          listId,
+          listName: list.name,
+          sourceMode,
+          addedCount: newItems.length,
+          historyId: history.historyId,
+        })
+
+        return { success: true, message: `已加入 ${newItems.length} 条待办到「${list.name}」`, addedCount: newItems.length }
+      },
+
+      removeShiftTodoItem: (listId, itemId) => {
+        const s = get()
+        const list = s.shiftTodoLists.find(l => l.listId === listId)
+        if (!list) return false
+        const item = list.items.find(i => i.itemId === itemId)
+        if (!item) return false
+
+        set(prev => ({
+          shiftTodoLists: prev.shiftTodoLists.map(l =>
+            l.listId === listId
+              ? { ...l, items: l.items.filter(i => i.itemId !== itemId), updatedAt: new Date().toISOString() }
+              : l
+          ),
+        }))
+        get().addLog(LogActionType.SHIFT_TODO_ITEM_REMOVE, `移出待办：${list.name} - ${item.anomalyId}`, {
+          listId,
+          listName: list.name,
+          itemId,
+          anomalyId: item.anomalyId,
+          residentId: item.residentId,
+        })
+        return true
+      },
+
+      toggleShiftTodoItemComplete: (listId, itemId) => {
+        const s = get()
+        const operator = s.currentOperator
+        const list = s.shiftTodoLists.find(l => l.listId === listId)
+        if (!list) return false
+        const item = list.items.find(i => i.itemId === itemId)
+        if (!item) return false
+
+        const now = new Date().toISOString()
+        set(prev => ({
+          shiftTodoLists: prev.shiftTodoLists.map(l =>
+            l.listId === listId
+              ? {
+                ...l,
+                items: l.items.map(i =>
+                  i.itemId === itemId
+                    ? {
+                        ...i,
+                        completed: !i.completed,
+                        completedAt: !i.completed ? now : null,
+                        completedBy: !i.completed ? operator : null,
+                      }
+                    : i
+                ),
+                updatedAt: now,
+              }
+              : l
+          ),
+        }))
+        get().addLog(LogActionType.SHIFT_TODO_ITEM_COMPLETE, `${item.completed ? '取消完成' : '标记完成'}: ${list.name} - ${item.anomalyId}`, {
+          listId,
+          listName: list.name,
+          itemId,
+          anomalyId: item.anomalyId,
+          completed: !item.completed,
+          operator,
+        })
+        return true
+      },
+
+      exportShiftTodoList: (listId, format) => {
+        const list = get().shiftTodoLists.find(l => l.listId === listId)
+        if (!list) return
+        const timestamp = todayStr().replace(/-/g, '')
+        const safeName = list.name.replace(/[\\/:*?"<>|]/g, '_')
+        if (format === 'json') {
+          const json = serializeShiftTodoForExport(list)
+          downloadFile(json, `班次待办_${safeName}_${timestamp}.json`, 'application/json')
+        } else {
+          const csv = shiftTodoToCSV(list)
+          downloadFile(csv, `班次待办_${safeName}_${timestamp}.csv`, 'text/csv')
+        }
+        get().addLog(LogActionType.SHIFT_TODO_EXPORT, `导出班次待办：${list.name}（${format.toUpperCase()}）`, {
+          listId,
+          name: list.name,
+          format,
+          itemCount: list.items.length,
+        })
+      },
+
+      importShiftTodoList: (jsonText) => {
+        if (get().currentRole !== UserRole.HEAD_NURSE) {
+          return {
+            valid: false,
+            canImport: false,
+            issues: [{ code: 'PERMISSION_DENIED', severity: 'error', message: '仅护士长可导入清单', suggestion: '请切换到护士长模式后再导入' }],
+            errorCount: 1,
+            warningCount: 0,
+            notFoundCount: 0,
+            updatedCount: 0,
+          }
+        }
+        const s = get()
+        const result = validateShiftTodoImport(jsonText, s.shiftTodoLists, s.anomalies)
+        if (result.valid && result.canImport && result.parsedList) {
+          const snapshot: ShiftTodoUndoSnapshot = {
+            lists: s.shiftTodoLists.map(l => ({
+              ...l,
+              items: l.items.map(i => ({ ...i })),
+            })),
+          }
+          const imported: ShiftTodoList = {
+            ...result.parsedList,
+            listId: generateId('SHLIST'),
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            createdBy: s.currentOperator,
+            items: result.parsedList.items.map(i => ({ ...i, itemId: generateId('TODO') })),
+          }
+          set(prev => ({ shiftTodoLists: [imported, ...prev.shiftTodoLists].slice(0, 100) }))
+
+          const history: ShiftTodoUndoHistory = {
+            historyId: generateId('STHIST'),
+            actionType: 'IMPORT',
+            listId: imported.listId,
+            listName: imported.name,
+            actionAt: new Date().toISOString(),
+            actionBy: s.currentOperator,
+            snapshot,
+            addedItemCount: imported.items.length,
+            undone: false,
+            undoneAt: null,
+            undoneBy: null,
+          }
+          set(prev => ({ shiftTodoUndoHistory: [history, ...prev.shiftTodoUndoHistory].slice(0, 50) }))
+
+          get().addLog(LogActionType.SHIFT_TODO_IMPORT, `导入班次待办清单：${imported.name}`, {
+            listId: imported.listId,
+            name: imported.name,
+            sourceItemCount: imported.items.length,
+            notFoundCount: result.notFoundCount,
+            updatedCount: result.updatedCount,
+            historyId: history.historyId,
+          })
+        }
+        return result
+      },
+
+      undoLastShiftTodoBatchAction: () => {
+        const s = get()
+        const nonUndone = s.shiftTodoUndoHistory.filter(h => !h.undone)
+        if (nonUndone.length === 0) {
+          return { success: false, message: '没有可撤销的班次待办批量操作', blockedReason: 'NO_HISTORY' as const, restoredListCount: 0, removedItemCount: 0 }
+        }
+        const last = nonUndone[0]
+        set(prev => ({
+          shiftTodoLists: last.snapshot.lists,
+          shiftTodoUndoHistory: prev.shiftTodoUndoHistory.map(h =>
+            h.historyId === last.historyId
+              ? { ...h, undone: true, undoneAt: new Date().toISOString(), undoneBy: prev.currentOperator }
+              : h
+          ),
+        }))
+        get().addLog(LogActionType.SHIFT_TODO_UNDO, `撤销班次待办操作：${last.listName}`, {
+          historyId: last.historyId,
+          listId: last.listId,
+          listName: last.listName,
+          actionType: last.actionType,
+          removedItemCount: last.addedItemCount,
+          restoredListCount: last.snapshot.lists.length,
+        })
+        return {
+          success: true,
+          message: `已撤销${last.actionType === 'BATCH_ADD' ? '批量加入' : '导入'}操作「${last.listName}」，恢复${last.snapshot.lists.length}个清单，移除${last.addedItemCount}条待办`,
+          restoredListCount: last.snapshot.lists.length,
+          removedItemCount: last.addedItemCount,
         }
       },
 
@@ -1756,6 +2065,9 @@ export const useAppStore = create<AppState>()(
         sandboxApplyHistory: state.sandboxApplyHistory,
         handoverPackages: state.handoverPackages,
         handoverApplyHistory: state.handoverApplyHistory,
+        currentRole: state.currentRole,
+        shiftTodoLists: state.shiftTodoLists,
+        shiftTodoUndoHistory: state.shiftTodoUndoHistory,
       }),
     }
   )

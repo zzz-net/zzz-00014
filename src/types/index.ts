@@ -14,6 +14,12 @@ export const AnomalyTypeLabels: Record<AnomalyType, string> = {
   [AnomalyType.UNREGISTERED_RESIDENT]: '居民不在名册',
 }
 
+export const AnomalySeverityLabels: Record<'high' | 'medium' | 'low', string> = {
+  high: '高',
+  medium: '中',
+  low: '低',
+}
+
 export enum ReviewStatus {
   PENDING = 'PENDING',
   CONFIRMED = 'CONFIRMED',
@@ -187,6 +193,16 @@ export enum LogActionType {
   HANDOVER_IMPORT = 'HANDOVER_IMPORT',
   HANDOVER_APPLY = 'HANDOVER_APPLY',
   HANDOVER_UNDO = 'HANDOVER_UNDO',
+  SHIFT_TODO_LIST_CREATE = 'SHIFT_TODO_LIST_CREATE',
+  SHIFT_TODO_LIST_DELETE = 'SHIFT_TODO_LIST_DELETE',
+  SHIFT_TODO_ITEM_ADD = 'SHIFT_TODO_ITEM_ADD',
+  SHIFT_TODO_ITEM_BATCH_ADD = 'SHIFT_TODO_ITEM_BATCH_ADD',
+  SHIFT_TODO_ITEM_REMOVE = 'SHIFT_TODO_ITEM_REMOVE',
+  SHIFT_TODO_ITEM_COMPLETE = 'SHIFT_TODO_ITEM_COMPLETE',
+  SHIFT_TODO_EXPORT = 'SHIFT_TODO_EXPORT',
+  SHIFT_TODO_IMPORT = 'SHIFT_TODO_IMPORT',
+  SHIFT_TODO_UNDO = 'SHIFT_TODO_UNDO',
+  SHIFT_TODO_ROLE_SWITCH = 'SHIFT_TODO_ROLE_SWITCH',
 }
 
 export const LogActionTypeLabels: Record<LogActionType, string> = {
@@ -217,6 +233,16 @@ export const LogActionTypeLabels: Record<LogActionType, string> = {
   [LogActionType.HANDOVER_IMPORT]: '导入交接包',
   [LogActionType.HANDOVER_APPLY]: '应用交接包',
   [LogActionType.HANDOVER_UNDO]: '撤销交接包应用',
+  [LogActionType.SHIFT_TODO_LIST_CREATE]: '新建班次待办清单',
+  [LogActionType.SHIFT_TODO_LIST_DELETE]: '删除班次待办清单',
+  [LogActionType.SHIFT_TODO_ITEM_ADD]: '班次待办加入单条',
+  [LogActionType.SHIFT_TODO_ITEM_BATCH_ADD]: '班次待办批量加入',
+  [LogActionType.SHIFT_TODO_ITEM_REMOVE]: '班次待办移出单条',
+  [LogActionType.SHIFT_TODO_ITEM_COMPLETE]: '班次待办标记完成',
+  [LogActionType.SHIFT_TODO_EXPORT]: '导出班次待办清单',
+  [LogActionType.SHIFT_TODO_IMPORT]: '导入班次待办清单',
+  [LogActionType.SHIFT_TODO_UNDO]: '撤销班次待办批量操作',
+  [LogActionType.SHIFT_TODO_ROLE_SWITCH]: '切换班次待办角色',
 }
 
 export interface OperationLog {
@@ -602,4 +628,106 @@ export interface HandoverUndoResult {
   blockedReason?: 'NO_HISTORY' | 'ALREADY_UNDONE'
   restoredCount: number
   protectedCount: number
+}
+
+export enum UserRole {
+  NURSE = 'NURSE',
+  HEAD_NURSE = 'HEAD_NURSE',
+}
+
+export const UserRoleLabels: Record<UserRole, string> = {
+  [UserRole.NURSE]: '普通护士',
+  [UserRole.HEAD_NURSE]: '护士长',
+}
+
+export const SHIFT_TODO_SCHEMA_VERSION = '1.0.0'
+
+export interface ShiftTodoItem {
+  itemId: string
+  anomalyId: string
+  anomalyType: AnomalyType
+  anomalySeverity: 'high' | 'medium' | 'low'
+  residentId: string
+  residentName?: string
+  anomalyDescription: string
+  anomalyStatus: ReviewStatus
+  anomalyUpdatedAt: string
+  responsibleNurse: string
+  deadline: string
+  handlingNote: string
+  completed: boolean
+  completedAt: string | null
+  completedBy: string | null
+  createdAt: string
+  addedBy: string
+}
+
+export interface ShiftTodoList {
+  listId: string
+  name: string
+  description: string
+  schemaVersion: string
+  createdAt: string
+  createdBy: string
+  updatedAt: string
+  items: ShiftTodoItem[]
+}
+
+export const ShiftTodoConflictCode = {
+  INVALID_JSON: 'INVALID_JSON',
+  INVALID_TYPE: 'INVALID_TYPE',
+  MISSING_FIELD: 'MISSING_FIELD',
+  VERSION_MISMATCH: 'VERSION_MISMATCH',
+  DUPLICATE_NAME: 'DUPLICATE_NAME',
+  ANOMALY_NOT_FOUND: 'ANOMALY_NOT_FOUND',
+  ANOMALY_UPDATED: 'ANOMALY_UPDATED',
+  PERMISSION_DENIED: 'PERMISSION_DENIED',
+} as const
+export type ShiftTodoConflictCode = typeof ShiftTodoConflictCode[keyof typeof ShiftTodoConflictCode]
+
+export interface ShiftTodoImportIssue {
+  code: ShiftTodoConflictCode
+  severity: 'error' | 'warning'
+  field?: string
+  listName?: string
+  anomalyId?: string
+  message: string
+  suggestion: string
+}
+
+export interface ShiftTodoImportValidationResult {
+  valid: boolean
+  canImport: boolean
+  issues: ShiftTodoImportIssue[]
+  errorCount: number
+  warningCount: number
+  parsedList?: ShiftTodoList
+  notFoundCount: number
+  updatedCount: number
+}
+
+export interface ShiftTodoUndoSnapshot {
+  lists: ShiftTodoList[]
+}
+
+export interface ShiftTodoUndoHistory {
+  historyId: string
+  actionType: 'BATCH_ADD' | 'IMPORT'
+  listId: string
+  listName: string
+  actionAt: string
+  actionBy: string
+  snapshot: ShiftTodoUndoSnapshot
+  addedItemCount: number
+  undone: boolean
+  undoneAt: string | null
+  undoneBy: string | null
+}
+
+export interface ShiftTodoUndoResult {
+  success: boolean
+  message: string
+  blockedReason?: 'NO_HISTORY' | 'ALREADY_UNDONE'
+  restoredListCount: number
+  removedItemCount: number
 }

@@ -13,6 +13,9 @@ import {
   LayoutDashboard,
   Layers,
   Package,
+  ClipboardList,
+  Shield,
+  User,
 } from 'lucide-react'
 import { useAppStore } from '@/store'
 import { FileUpload } from '@/components/FileUpload'
@@ -24,6 +27,8 @@ import { QCRuleConfig } from '@/components/QCRuleConfig'
 import { OperationLogs } from '@/components/OperationLogs'
 import { ImportBatches } from '@/components/ImportBatches'
 import { HandoverPanel } from '@/components/HandoverPanel'
+import { ShiftTodoPanel } from '@/components/ShiftTodoPanel'
+import { UserRole } from '@/types'
 import { Button } from '@/components/common/Button'
 import { Card } from '@/components/common/Card'
 import { Badge } from '@/components/common/Badge'
@@ -44,11 +49,15 @@ export default function Dashboard() {
   const currentRuleVersion = useAppStore(s => s.currentRuleVersion)
   const ruleVersions = useAppStore(s => s.ruleVersions)
   const importBatches = useAppStore(s => s.importBatches)
+  const currentRole = useAppStore(s => s.currentRole)
+  const setCurrentRole = useAppStore(s => s.setCurrentRole)
+  const shiftTodoLists = useAppStore(s => s.shiftTodoLists)
 
   const [showHelp, setShowHelp] = useState(false)
   const [showResetConfirm, setShowResetConfirm] = useState(false)
   const [showRecalcConfirm, setShowRecalcConfirm] = useState(false)
   const [showHandover, setShowHandover] = useState(false)
+  const [showShiftTodo, setShowShiftTodo] = useState(false)
   const [activeTab, setActiveTab] = useState<TabType>('dashboard')
 
   const currentVersion = ruleVersions.find(v => v.version === currentRuleVersion)
@@ -99,6 +108,45 @@ export default function Dashboard() {
                 <HelpCircle className="w-4 h-4" />
                 <span className="hidden sm:inline">帮助</span>
               </Button>
+              <div className="relative group">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={cn(
+                    "bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600 hover:text-white",
+                    currentRole === UserRole.HEAD_NURSE && "border-purple-500/50 bg-purple-900/30 text-purple-200"
+                  )}
+                >
+                  <Shield className="w-4 h-4" />
+                  <span className="hidden sm:inline">
+                    {currentRole === UserRole.HEAD_NURSE ? '护士长' : '护士'}
+                  </span>
+                </Button>
+                <div className="absolute right-0 mt-2 w-40 bg-white rounded-lg shadow-lg border border-gray-200 py-1 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+                  <button
+                    onClick={() => setCurrentRole(UserRole.HEAD_NURSE)}
+                    className={cn(
+                      "w-full text-left px-3 py-2 text-sm flex items-center gap-2",
+                      currentRole === UserRole.HEAD_NURSE ? "bg-purple-50 text-purple-700" : "text-gray-700 hover:bg-gray-100"
+                    )}
+                  >
+                    <Shield className="w-4 h-4" />
+                    护士长模式
+                    {currentRole === UserRole.HEAD_NURSE && <span className="ml-auto text-xs">当前</span>}
+                  </button>
+                  <button
+                    onClick={() => setCurrentRole(UserRole.NURSE)}
+                    className={cn(
+                      "w-full text-left px-3 py-2 text-sm flex items-center gap-2 border-t border-gray-100",
+                      currentRole === UserRole.NURSE ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-100"
+                    )}
+                  >
+                    <User className="w-4 h-4" />
+                    护士模式
+                    {currentRole === UserRole.NURSE && <span className="ml-auto text-xs">当前</span>}
+                  </button>
+                </div>
+              </div>
               <Button
                 variant="outline"
                 size="sm"
@@ -119,6 +167,20 @@ export default function Dashboard() {
                   >
                     <Package className="w-4 h-4" />
                     <span className="hidden sm:inline">交接包</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowShiftTodo(true)}
+                    className="bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600 hover:text-white"
+                  >
+                    <ClipboardList className="w-4 h-4" />
+                    <span className="hidden sm:inline">班次待办</span>
+                    {shiftTodoLists.length > 0 && (
+                      <span className="ml-1 px-1.5 py-0.5 rounded-full bg-indigo-500 text-white text-[10px]">
+                        {shiftTodoLists.length}
+                      </span>
+                    )}
                   </Button>
                   <Button
                     variant="outline"
@@ -341,6 +403,7 @@ export default function Dashboard() {
       )}
 
       <HandoverPanel open={showHandover} onClose={() => setShowHandover(false)} />
+      <ShiftTodoPanel open={showShiftTodo} onClose={() => setShowShiftTodo(false)} />
     </div>
   )
 }

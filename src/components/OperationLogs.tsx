@@ -50,6 +50,16 @@ const ActionColor: Record<LogActionType, string> = {
   [LogActionType.HANDOVER_IMPORT]: 'bg-violet-100 text-violet-700 border-violet-200',
   [LogActionType.HANDOVER_APPLY]: 'bg-sky-100 text-sky-700 border-sky-200',
   [LogActionType.HANDOVER_UNDO]: 'bg-amber-100 text-amber-700 border-amber-200',
+  [LogActionType.SHIFT_TODO_LIST_CREATE]: 'bg-indigo-100 text-indigo-700 border-indigo-200',
+  [LogActionType.SHIFT_TODO_LIST_DELETE]: 'bg-rose-100 text-rose-700 border-rose-200',
+  [LogActionType.SHIFT_TODO_ITEM_ADD]: 'bg-blue-100 text-blue-700 border-blue-200',
+  [LogActionType.SHIFT_TODO_ITEM_BATCH_ADD]: 'bg-sky-100 text-sky-700 border-sky-200',
+  [LogActionType.SHIFT_TODO_ITEM_REMOVE]: 'bg-orange-100 text-orange-700 border-orange-200',
+  [LogActionType.SHIFT_TODO_ITEM_COMPLETE]: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  [LogActionType.SHIFT_TODO_EXPORT]: 'bg-teal-100 text-teal-700 border-teal-200',
+  [LogActionType.SHIFT_TODO_IMPORT]: 'bg-violet-100 text-violet-700 border-violet-200',
+  [LogActionType.SHIFT_TODO_UNDO]: 'bg-amber-100 text-amber-700 border-amber-200',
+  [LogActionType.SHIFT_TODO_ROLE_SWITCH]: 'bg-gray-100 text-gray-700 border-gray-200',
 }
 
 function formatDate(iso: string) {
