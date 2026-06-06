@@ -170,6 +170,122 @@ console.log('\n=== 测试6：持久化一致性 - rules 深拷贝独立、字段
   assert(typeof r2.enabled === 'boolean', 'enabled 字段完好')
 }
 
+console.log('\n=== 测试7 [回归]：已有自动"需上门"异常 + 清空映射 + 重算 → 自动状态回退为待处理 ===')
+{
+  // 第 1 步：按默认映射（含 OVERDUE、ABNORMAL）生成首次异常结果
+  const rulesMapped: QualityControlRules = {
+    ...DEFAULT_QC_RULES,
+    homeVisitStatusMappings: [AnomalyType.OVERDUE_VISIT, AnomalyType.ABNORMAL_METRIC],
+  }
+  const { anomalies: firstPass } = detectAnomalies(residents, appointments, followups, [], rulesMapped, true)
+  const autoHomeVisit = firstPass.filter(a => a.status === ReviewStatus.NEED_HOME_VISIT)
+  console.log(`  第1步（映射命中）自动生成需上门：${autoHomeVisit.length} 条`)
+  assert(autoHomeVisit.length >= 2, '首次识别至少生成 2 条需上门（OVERDUE + ABNORMAL）')
+  assert(autoHomeVisit.every(a => a.type === AnomalyType.OVERDUE_VISIT || a.type === AnomalyType.ABNORMAL_METRIC),
+    '自动需上门的异常类型与映射一致')
+
+  // 第 2 步：把映射清空，用第 1 步结果作为 existingAnomalies 重算
+  const rulesEmpty: QualityControlRules = { ...DEFAULT_QC_RULES, homeVisitStatusMappings: [] }
+  const { anomalies: secondPass } = detectAnomalies(residents, appointments, followups, firstPass, rulesEmpty, true)
+  const stillHome = secondPass.filter(a => a.status === ReviewStatus.NEED_HOME_VISIT)
+  const pendingNow = secondPass.filter(a => a.status === ReviewStatus.PENDING)
+  console.log(`  第2步（清空映射）需上门=${stillHome.length}, 待处理=${pendingNow.length}`)
+  assert(stillHome.length === 0, '清空映射后，自动需上门异常全部回退为待处理（0 条需上门保留）')
+  assert(pendingNow.length === secondPass.length, '清空映射后，所有未做人工复核的异常状态都应为待处理')
+}
+
+console.log('\n=== 测试8 [回归]：清空映射后恢复默认 → 自动状态再次变为需上门 ===')
+{
+  // 先用空映射生成一批 PENDING 异常
+  const rulesEmpty: QualityControlRules = { ...DEFAULT_QC_RULES, homeVisitStatusMappings: [] }
+  const { anomalies: pendingOnes } = detectAnomalies(residents, appointments, followups, [], rulesEmpty, true)
+  assert(pendingOnes.every(a => a.status === ReviewStatus.PENDING), '空映射下所有异常初始化为待处理')
+
+  // 恢复默认映射，应该重新把 OVERDUE、ABNORMAL 标为需上门
+  const { anomalies: restored } = detectAnomalies(
+    residents,
+    appointments,
+    followups,
+    pendingOnes,
+    DEFAULT_QC_RULES,
+    true
+  )
+  const overdue = restored.filter(a => a.type === AnomalyType.OVERDUE_VISIT)
+  const abnormal = restored.filter(a => a.type === AnomalyType.ABNORMAL_METRIC)
+  assert(overdue.every(a => a.status === ReviewStatus.NEED_HOME_VISIT), '恢复默认映射后，逾期未访重新变需上门')
+  assert(abnormal.every(a => a.status === ReviewStatus.NEED_HOME_VISIT), '恢复默认映射后，指标越界重新变需上门')
+}
+
+console.log('\n=== 测试9 [回归]：人工已确认/忽略 vs 自动需上门 —— 映射变化时只有自动状态受影响 ===')
+{
+  // 先生成默认映射下的异常
+  const rulesFull: QualityControlRules = {
+    ...DEFAULT_QC_RULES,
+    homeVisitStatusMappings: [AnomalyType.OVERDUE_VISIT, AnomalyType.ABNORMAL_METRIC],
+  }
+  const { anomalies: baseline } = detectAnomalies(residents, appointments, followups, [], rulesFull, true)
+
+  // 模拟人工复核：把第 1 条标记为 CONFIRMED，第 2 条标记为 IGNORED，其余保持自动 NEED_HOME_VISIT
+  const manuallyReviewed: Anomaly[] = baseline.map((a, idx) => {
+    if (idx === 0) return { ...a, status: ReviewStatus.CONFIRMED, handler: '复核员A', remark: '人工确认' }
+    if (idx === 1) return { ...a, status: ReviewStatus.IGNORED, handler: '复核员B', remark: '误报忽略' }
+    return a
+  })
+
+  // 清空映射重算
+  const rulesEmpty: QualityControlRules = { ...DEFAULT_QC_RULES, homeVisitStatusMappings: [] }
+  const { anomalies: afterEmpty } = detectAnomalies(
+    residents,
+    appointments,
+    followups,
+    manuallyReviewed,
+    rulesEmpty,
+    true
+  )
+
+  const confirmed = afterEmpty.filter(a => a.status === ReviewStatus.CONFIRMED)
+  const ignored = afterEmpty.filter(a => a.status === ReviewStatus.IGNORED)
+  const autoHome = afterEmpty.filter(a => a.status === ReviewStatus.NEED_HOME_VISIT)
+  console.log(`  映射清空后：已确认=${confirmed.length}, 忽略=${ignored.length}, 需上门=${autoHome.length}`)
+  assert(confirmed.length === 1 && confirmed[0].remark === '人工确认', '人工 CONFIRMED 状态和备注完整保留')
+  assert(ignored.length === 1 && ignored[0].handler === '复核员B', '人工 IGNORED 状态和处理人完整保留')
+  assert(autoHome.length === 0, '自动生成的需上门在映射清空后全部回退，无一保留')
+}
+
+console.log('\n=== 测试10 [回归]：规则版本切换时的差异预览能识别自动状态变化 ===')
+{
+  // 先按默认映射生成一批 existingAnomalies（含自动需上门）
+  const rulesFull: QualityControlRules = {
+    ...DEFAULT_QC_RULES,
+    homeVisitStatusMappings: [AnomalyType.OVERDUE_VISIT, AnomalyType.ABNORMAL_METRIC],
+  }
+  const { anomalies: existingWithHome } = detectAnomalies(residents, appointments, followups, [], rulesFull, true)
+
+  // 预览：从默认映射（命中2类）切换到仅映射重复随访 → OVERDUE 和 ABNORMAL 的状态会从 NEED_HOME_VISIT → PENDING
+  const rulesOnlyDup: QualityControlRules = {
+    ...DEFAULT_QC_RULES,
+    homeVisitStatusMappings: [AnomalyType.DUPLICATE_FOLLOWUP],
+  }
+  const preview = calculateRuleDiffPreview(
+    residents,
+    appointments,
+    followups,
+    existingWithHome,
+    rulesFull,
+    rulesOnlyDup
+  )
+  console.log(`  预览：新增=${preview.added.length}, 移除=${preview.removed.length}, 变更=${preview.changed.length}`)
+  assert(preview.changed.length >= 2, '至少 2 条异常因映射变更导致状态变化（OVERDUE + ABNORMAL 从需上门回退为待处理）')
+  assert(
+    preview.changed.some(a => a.type === AnomalyType.OVERDUE_VISIT && a.status === ReviewStatus.PENDING),
+    '差异预览中 OVERDUE_VISIT 的新状态为 PENDING（从需上门回退）'
+  )
+  assert(
+    preview.changed.some(a => a.type === AnomalyType.ABNORMAL_METRIC && a.status === ReviewStatus.PENDING),
+    '差异预览中 ABNORMAL_METRIC 的新状态为 PENDING（从需上门回退）'
+  )
+}
+
 console.log(`\n====== 测试结果：通过 ${passed} / ${passed + failed} ======`)
 if (failed > 0) {
   process.exit(1)

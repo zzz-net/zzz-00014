@@ -23,7 +23,9 @@ function initialStatusFor(
   rules: QualityControlRules,
   existingStatus?: ReviewStatus
 ): ReviewStatus {
-  if (existingStatus) return existingStatus
+  if (existingStatus && PROTECTED_STATUSES.includes(existingStatus)) {
+    return existingStatus
+  }
   if (rules.homeVisitStatusMappings.includes(type)) {
     return ReviewStatus.NEED_HOME_VISIT
   }
