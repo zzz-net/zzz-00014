@@ -163,6 +163,9 @@ export enum LogActionType {
   PRE_CHECK_IMPORT_WARN = 'PRE_CHECK_IMPORT_WARN',
   PRE_CHECK_CANCEL = 'PRE_CHECK_CANCEL',
   PRE_CHECK_EXPORT = 'PRE_CHECK_EXPORT',
+  IMPORT_BATCH_CREATE = 'IMPORT_BATCH_CREATE',
+  IMPORT_BATCH_REVERT = 'IMPORT_BATCH_REVERT',
+  IMPORT_BATCH_EXPORT = 'IMPORT_BATCH_EXPORT',
 }
 
 export const LogActionTypeLabels: Record<LogActionType, string> = {
@@ -177,6 +180,9 @@ export const LogActionTypeLabels: Record<LogActionType, string> = {
   [LogActionType.PRE_CHECK_IMPORT_WARN]: '警告继续导入',
   [LogActionType.PRE_CHECK_CANCEL]: '预检取消导入',
   [LogActionType.PRE_CHECK_EXPORT]: '预检报告导出',
+  [LogActionType.IMPORT_BATCH_CREATE]: '生成导入批次',
+  [LogActionType.IMPORT_BATCH_REVERT]: '撤销导入批次',
+  [LogActionType.IMPORT_BATCH_EXPORT]: '导出导入批次',
 }
 
 export interface OperationLog {
@@ -291,3 +297,46 @@ export const DEFAULT_PRE_CHECK_CONFIG: PreCheckConfig = {
 
 export type PreCheckFilterSeverity = 'all' | PreCheckIssueSeverity
 export type PreCheckFilterDataType = 'all' | DataType
+
+export interface ImportBatchSnapshot {
+  residents: Resident[]
+  appointments: Appointment[]
+  followups: Followup[]
+  anomalies: Anomaly[]
+  unregisteredRecords: UnregisteredRecord[]
+  importedFileHashes: Record<DataType, string>
+}
+
+export interface ImportBatchPreCheckSummary {
+  totalRows: number
+  validRows: number
+  invalidRows: number
+  warningCount: number
+  errorCount: number
+  issueCodes: PreCheckIssueCode[]
+}
+
+export interface ImportBatch {
+  batchId: string
+  dataType: DataType
+  fileName: string
+  fileHash: string
+  importedCount: number
+  skippedCount: number
+  preCheckSummary: ImportBatchPreCheckSummary | null
+  operator: string
+  createdAt: string
+  reverted: boolean
+  revertedAt: string | null
+  revertedBy: string | null
+  snapshot: ImportBatchSnapshot
+  mode: 'all' | 'validOnly' | 'direct'
+}
+
+export interface RevertBatchResult {
+  success: boolean
+  message: string
+  blockedReason?: 'NOT_LATEST' | 'DEPENDENCY_EXISTS' | 'HASH_CONFLICT' | 'ALREADY_REVERTED'
+  protectedAnomalyCount?: number
+  restoredDataCount?: Record<DataType, number>
+}

@@ -11,6 +11,7 @@ import {
   RefreshCw,
   ShieldCheck,
   LayoutDashboard,
+  Layers,
 } from 'lucide-react'
 import { useAppStore } from '@/store'
 import { FileUpload } from '@/components/FileUpload'
@@ -20,12 +21,13 @@ import { AnomalyTable } from '@/components/AnomalyTable'
 import { UnregisteredList } from '@/components/UnregisteredList'
 import { QCRuleConfig } from '@/components/QCRuleConfig'
 import { OperationLogs } from '@/components/OperationLogs'
+import { ImportBatches } from '@/components/ImportBatches'
 import { Button } from '@/components/common/Button'
 import { Card } from '@/components/common/Card'
 import { Badge } from '@/components/common/Badge'
 import { cn } from '@/lib/utils'
 
-type TabType = 'dashboard' | 'rules' | 'logs'
+type TabType = 'dashboard' | 'rules' | 'logs' | 'batches'
 
 export default function Dashboard() {
   const exportFilteredData = useAppStore(s => s.exportFilteredData)
@@ -39,6 +41,7 @@ export default function Dashboard() {
   const hasData = residents > 0 || appointments > 0 || followups > 0
   const currentRuleVersion = useAppStore(s => s.currentRuleVersion)
   const ruleVersions = useAppStore(s => s.ruleVersions)
+  const importBatches = useAppStore(s => s.importBatches)
 
   const [showHelp, setShowHelp] = useState(false)
   const [showResetConfirm, setShowResetConfirm] = useState(false)
@@ -46,11 +49,13 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard')
 
   const currentVersion = ruleVersions.find(v => v.version === currentRuleVersion)
+  const activeBatchCount = importBatches.filter(b => !b.reverted).length
 
   const tabs: { key: TabType; label: string; icon: React.ReactNode; badge?: number }[] = [
     { key: 'dashboard', label: '异常看板', icon: <LayoutDashboard className="w-4 h-4" /> },
     { key: 'rules', label: '质控规则', icon: <Settings className="w-4 h-4" /> },
-    { key: 'logs', label: '操作日志', icon: <FileText className="w-4 h-4" />, badge: undefined },
+    { key: 'batches', label: '导入批次', icon: <Layers className="w-4 h-4" />, badge: activeBatchCount },
+    { key: 'logs', label: '操作日志', icon: <FileText className="w-4 h-4" /> },
   ]
 
   return (
@@ -223,6 +228,8 @@ export default function Dashboard() {
           </div>
         )}
 
+        {activeTab === 'batches' && <ImportBatches />}
+
         {activeTab === 'logs' && <OperationLogs />}
       </main>
 
@@ -241,6 +248,7 @@ export default function Dashboard() {
                 <ul className="space-y-2">
                   <li><strong className="text-blue-600">异常看板：</strong>数据导入、异常识别、筛选与复核</li>
                   <li><strong className="text-purple-600">质控规则：</strong>配置异常识别阈值、管理规则版本、预览差异后应用</li>
+                  <li><strong className="text-sky-600">导入批次：</strong>追踪每次 CSV 入库、支持撤销最近一次成功导入、批次导出</li>
                   <li><strong className="text-emerald-600">操作日志：</strong>记录所有关键操作，支持筛选与导出</li>
                 </ul>
               </div>

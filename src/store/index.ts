@@ -26,6 +26,10 @@ import {
   UnregisteredRecord,
   PreCheckIssueCodeLabels,
   DataTypeLabels,
+  ImportBatch,
+  ImportBatchSnapshot,
+  ImportBatchPreCheckSummary,
+  RevertBatchResult,
 } from '@/types'
 import { parseCSV, generateCSV, downloadFile } from '@/utils/csv'
 import { validateData } from '@/utils/validator'
@@ -54,6 +58,7 @@ interface AppState {
   preCheckFilterSeverity: PreCheckFilterSeverity
   preCheckFilterDataType: PreCheckFilterDataType
   preCheckFilterSearch: string
+  importBatches: ImportBatch[]
   importData: (type: DataType, fileText: string, fileName: string) => Promise<ImportResult>
   runPreCheck: (type: DataType, fileText: string, fileName: string) => Promise<PreCheckResult>
   confirmImportFromPreCheck: (mode: 'all' | 'validOnly') => Promise<ImportResult | null>
@@ -81,6 +86,19 @@ interface AppState {
   exportLogs: (format: 'json' | 'csv') => void
   setCurrentOperator: (name: string) => void
   addLog: (actionType: LogActionType, description: string, details?: Record<string, unknown>) => void
+  revertLastBatch: () => RevertBatchResult
+  revertBatch: (batchId: string) => RevertBatchResult
+  exportBatches: (format: 'json' | 'csv') => void
+  _createImportBatch: (
+    type: DataType,
+    fileName: string,
+    fileHash: string,
+    importedCount: number,
+    skippedCount: number,
+    mode: 'all' | 'validOnly' | 'direct',
+    preCheckResult: PreCheckResult | null,
+    snapshot: ImportBatchSnapshot
+  ) => void
 }
 
 const DEFAULT_FILTERS: Filters = {
@@ -125,6 +143,7 @@ export const useAppStore = create<AppState>()(
       preCheckFilterSeverity: 'all',
       preCheckFilterDataType: 'all',
       preCheckFilterSearch: '',
+      importBatches: [],
 
       addLog: (actionType, description, details = {}) => {
         const log: OperationLog = {
@@ -136,6 +155,59 @@ export const useAppStore = create<AppState>()(
           details,
         }
         set(s => ({ operationLogs: [log, ...s.operationLogs].slice(0, 5000) }))
+      },
+
+      _createImportBatch: (
+        type: DataType,
+        fileName: string,
+        fileHash: string,
+        importedCount: number,
+        skippedCount: number,
+        mode: 'all' | 'validOnly' | 'direct',
+        preCheckResult: PreCheckResult | null,
+        snapshot: ImportBatchSnapshot
+      ) => {
+        let preCheckSummary: ImportBatchPreCheckSummary | null = null
+        if (preCheckResult) {
+          const typeResult = preCheckResult.dataTypes[type]
+          if (typeResult) {
+            const uniqueCodes = Array.from(new Set(typeResult.issues.map(i => i.code)))
+            preCheckSummary = {
+              totalRows: typeResult.totalRows,
+              validRows: typeResult.validRows,
+              invalidRows: typeResult.invalidRowIndices.length,
+              warningCount: typeResult.warningCount,
+              errorCount: typeResult.errorCount,
+              issueCodes: uniqueCodes,
+            }
+          }
+        }
+        const batch: ImportBatch = {
+          batchId: generateId('BATCH'),
+          dataType: type,
+          fileName,
+          fileHash,
+          importedCount,
+          skippedCount,
+          preCheckSummary,
+          operator: get().currentOperator,
+          createdAt: new Date().toISOString(),
+          reverted: false,
+          revertedAt: null,
+          revertedBy: null,
+          snapshot,
+          mode,
+        }
+        set(s => ({ importBatches: [batch, ...s.importBatches].slice(0, 500) }))
+        get().addLog(LogActionType.IMPORT_BATCH_CREATE, `生成导入批次：${DataTypeLabels[type]} ${fileName}（${importedCount}条）`, {
+          batchId: batch.batchId,
+          type,
+          fileName,
+          importedCount,
+          skippedCount,
+          mode,
+        })
+        return batch
       },
 
       runPreCheck: async (type, fileText, fileName) => {
@@ -308,6 +380,18 @@ export const useAppStore = create<AppState>()(
         const validation = validateData(type, rows)
         const data = validation.data as Resident[] | Appointment[] | Followup[]
 
+        const preSnapshot = (() => {
+          const s = get()
+          return {
+            residents: [...s.residents],
+            appointments: [...s.appointments],
+            followups: [...s.followups],
+            anomalies: s.anomalies.map(a => ({ ...a })),
+            unregisteredRecords: s.unregisteredRecords.map(u => ({ ...u })),
+            importedFileHashes: { ...s.importedFileHashes },
+          }
+        })()
+
         set(s => {
           const newState: Partial<AppState> = {
             importedFileHashes: { ...s.importedFileHashes, [type]: hash },
@@ -359,6 +443,17 @@ export const useAppStore = create<AppState>()(
           mode,
           warningCount: typeResult.warningCount,
         })
+
+        get()._createImportBatch(
+          type,
+          fileName,
+          hash,
+          data.length,
+          skippedCount,
+          mode,
+          preCheckResult,
+          preSnapshot
+        )
 
         set({ preCheckPendingFile: null, preCheckResult: null })
         return get().lastImportResult[type]!
@@ -519,6 +614,18 @@ export const useAppStore = create<AppState>()(
           return result
         }
 
+        const preSnapshot = (() => {
+          const s = get()
+          return {
+            residents: [...s.residents],
+            appointments: [...s.appointments],
+            followups: [...s.followups],
+            anomalies: s.anomalies.map(a => ({ ...a })),
+            unregisteredRecords: s.unregisteredRecords.map(u => ({ ...u })),
+            importedFileHashes: { ...s.importedFileHashes },
+          }
+        })()
+
         set(s => {
           const newState: Partial<AppState> = {
             importedFileHashes: { ...s.importedFileHashes, [type]: hash },
@@ -565,6 +672,17 @@ export const useAppStore = create<AppState>()(
           fileName,
           count: validation.data.length,
         })
+
+        get()._createImportBatch(
+          type,
+          fileName,
+          hash,
+          validation.data.length,
+          0,
+          'direct',
+          null,
+          preSnapshot
+        )
 
         return get().lastImportResult[type]!
       },
@@ -691,6 +809,7 @@ export const useAppStore = create<AppState>()(
           unregisteredRecords: [],
           lastImportResult: { residents: null, appointments: null, followups: null },
           filters: { ...DEFAULT_FILTERS },
+          importBatches: [],
         })
       },
 
@@ -857,6 +976,210 @@ export const useAppStore = create<AppState>()(
         })
       },
 
+      revertLastBatch: () => {
+        const batches = get().importBatches.filter(b => !b.reverted)
+        if (batches.length === 0) {
+          return {
+            success: false,
+            message: '没有可撤销的成功导入批次',
+          }
+        }
+        return get().revertBatch(batches[0].batchId)
+      },
+
+      revertBatch: (batchId: string): RevertBatchResult => {
+        const s = get()
+        const batch = s.importBatches.find(b => b.batchId === batchId)
+
+        if (!batch) {
+          return { success: false, message: `未找到批次 ${batchId}` }
+        }
+
+        if (batch.reverted) {
+          return {
+            success: false,
+            message: '该批次已被撤销，不能重复撤销',
+            blockedReason: 'ALREADY_REVERTED' as const,
+          }
+        }
+
+        const nonRevertedBatches = s.importBatches.filter(b => !b.reverted)
+        const batchOrderInNonReverted = nonRevertedBatches.findIndex(b => b.batchId === batchId)
+        if (batchOrderInNonReverted !== 0) {
+          const newerBatch = nonRevertedBatches[batchOrderInNonReverted - 1]
+          return {
+            success: false,
+            message: `批次 ${batch.batchId} 不是最近一次成功导入，请先撤销较新的批次「${newerBatch.fileName}」（${DataTypeLabels[newerBatch.dataType]}，${newerBatch.importedCount}条）`,
+            blockedReason: 'NOT_LATEST' as const,
+          }
+        }
+
+        const currentHash = s.importedFileHashes[batch.dataType]
+        if (currentHash !== batch.fileHash) {
+          return {
+            success: false,
+            message: `当前${DataTypeLabels[batch.dataType]}数据文件哈希与批次记录不匹配，可能已被其他操作修改，无法安全撤销`,
+            blockedReason: 'HASH_CONFLICT' as const,
+          }
+        }
+
+        if (batch.dataType === 'residents') {
+          const dependents = nonRevertedBatches.filter(
+            b => b.batchId !== batchId && (b.dataType === 'appointments' || b.dataType === 'followups')
+          )
+          if (dependents.length > 0) {
+            const depNames = dependents.map(d => `「${d.fileName}（${DataTypeLabels[d.dataType]}）」`).join('、')
+            return {
+              success: false,
+              message: `居民名册批次存在依赖：后续已导入 ${depNames}，请先撤销这些依赖批次`,
+              blockedReason: 'DEPENDENCY_EXISTS' as const,
+            }
+          }
+        }
+
+        const snapshot = batch.snapshot
+        const PROTECTED = [ReviewStatus.CONFIRMED, ReviewStatus.IGNORED]
+        const protectedAnomalyIds = new Set(
+          s.anomalies
+            .filter(a => PROTECTED.includes(a.status))
+            .map(a => a.anomalyId)
+        )
+        const currentAnomalyMap = new Map(s.anomalies.map(a => [a.anomalyId, a]))
+
+        const mergedAnomalies: Anomaly[] = []
+        const processedKeys = new Set<string>()
+
+        snapshot.anomalies.forEach(sa => {
+          processedKeys.add(sa.anomalyId)
+          const current = currentAnomalyMap.get(sa.anomalyId)
+          if (current && PROTECTED.includes(current.status)) {
+            mergedAnomalies.push(current)
+          } else {
+            mergedAnomalies.push(sa)
+          }
+        })
+
+        s.anomalies.forEach(ca => {
+          if (!processedKeys.has(ca.anomalyId) && PROTECTED.includes(ca.status)) {
+            mergedAnomalies.push(ca)
+            protectedAnomalyIds.add(ca.anomalyId)
+          }
+        })
+
+        const protectedCount = Array.from(protectedAnomalyIds).filter(id => {
+          const a = currentAnomalyMap.get(id)
+          return a && PROTECTED.includes(a.status)
+        }).length
+
+        set(prev => ({
+          residents: snapshot.residents,
+          appointments: snapshot.appointments,
+          followups: snapshot.followups,
+          importedFileHashes: snapshot.importedFileHashes,
+          anomalies: mergedAnomalies,
+          unregisteredRecords: snapshot.unregisteredRecords,
+          importBatches: prev.importBatches.map(b =>
+            b.batchId === batchId
+              ? {
+                  ...b,
+                  reverted: true,
+                  revertedAt: new Date().toISOString(),
+                  revertedBy: prev.currentOperator,
+                }
+              : b
+          ),
+        }))
+
+        get().addLog(LogActionType.IMPORT_BATCH_REVERT, `撤销导入批次：${DataTypeLabels[batch.dataType]} ${batch.fileName}`, {
+          batchId,
+          dataType: batch.dataType,
+          fileName: batch.fileName,
+          importedCount: batch.importedCount,
+          protectedAnomalyCount: protectedCount,
+        })
+
+        return {
+          success: true,
+          message: `已撤销批次 ${batch.fileName}，恢复${DataTypeLabels[batch.dataType]}共${
+            batch.dataType === 'residents'
+              ? snapshot.residents.length
+              : batch.dataType === 'appointments'
+                ? snapshot.appointments.length
+                : snapshot.followups.length
+          }条记录，保留${protectedCount}条已人工复核的异常记录`,
+          protectedAnomalyCount: protectedCount,
+          restoredDataCount: {
+            residents: snapshot.residents.length,
+            appointments: snapshot.appointments.length,
+            followups: snapshot.followups.length,
+          },
+        }
+      },
+
+      exportBatches: (format: 'json' | 'csv') => {
+        const batches = get().importBatches
+        const timestamp = todayStr().replace(/-/g, '')
+
+        const issueCodeLabels = (codes: string[]) =>
+          codes.map(c => (PreCheckIssueCodeLabels as Record<string, string>)[c] || c).join('、')
+
+        if (format === 'json') {
+          const exportObj = {
+            exportTime: new Date().toISOString(),
+            totalCount: batches.length,
+            batches: batches.map(b => ({
+              batchId: b.batchId,
+              dataType: b.dataType,
+              dataTypeLabel: DataTypeLabels[b.dataType],
+              fileName: b.fileName,
+              fileHash: b.fileHash,
+              importedCount: b.importedCount,
+              skippedCount: b.skippedCount,
+              mode: b.mode,
+              operator: b.operator,
+              createdAt: b.createdAt,
+              reverted: b.reverted,
+              revertedAt: b.revertedAt,
+              revertedBy: b.revertedBy,
+              preCheckSummary: b.preCheckSummary
+                ? {
+                    ...b.preCheckSummary,
+                    issueCodeLabels: issueCodeLabels(b.preCheckSummary.issueCodes),
+                  }
+                : null,
+            })),
+          }
+          downloadFile(JSON.stringify(exportObj, null, 2), `导入批次_${timestamp}.json`, 'application/json')
+        } else {
+          const data = batches.map(b => ({
+            批次ID: b.batchId,
+            数据类型: DataTypeLabels[b.dataType],
+            文件名: b.fileName,
+            文件哈希: b.fileHash,
+            导入条数: b.importedCount,
+            跳过条数: b.skippedCount,
+            导入模式: b.mode === 'direct' ? '直接导入' : b.mode === 'validOnly' ? '仅有效数据' : '全部数据',
+            预检总行数: b.preCheckSummary?.totalRows ?? '',
+            预检有效行数: b.preCheckSummary?.validRows ?? '',
+            预检错误数: b.preCheckSummary?.errorCount ?? '',
+            预检警告数: b.preCheckSummary?.warningCount ?? '',
+            预检问题类型: b.preCheckSummary ? issueCodeLabels(b.preCheckSummary.issueCodes) : '',
+            操作者: b.operator,
+            导入时间: b.createdAt,
+            是否已撤销: b.reverted ? '是' : '否',
+            撤销时间: b.revertedAt || '',
+            撤销人: b.revertedBy || '',
+          }))
+          const csv = generateCSV(data)
+          downloadFile(csv, `导入批次_${timestamp}.csv`, 'text/csv')
+        }
+
+        get().addLog(LogActionType.IMPORT_BATCH_EXPORT, `导出导入批次（${format.toUpperCase()}，${batches.length}条）`, {
+          format,
+          count: batches.length,
+        })
+      },
+
       setCurrentOperator: (name: string) => {
         set({ currentOperator: name })
       },
@@ -876,6 +1199,7 @@ export const useAppStore = create<AppState>()(
         operationLogs: state.operationLogs,
         currentOperator: state.currentOperator,
         preCheckConfig: state.preCheckConfig,
+        importBatches: state.importBatches,
       }),
     }
   )
