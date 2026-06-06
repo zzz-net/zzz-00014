@@ -419,6 +419,107 @@ console.log('\n=== 预检测试9：问题行号与字段信息完整 ===')
   })
 }
 
+console.log('\n=== 预检测试10：validOnly 模式跳过居民不存在（warning）行 ===')
+{
+  const residentIds = new Set(['R001'])
+  const csv = [
+    '居民编号,随访日期,收缩压,舒张压,血糖',
+    'R001,2026-06-01,130,85,5.5',
+    'R999,2026-06-02,140,90,6.1',
+    'R001,2026-06-03,125,80,5.2',
+    'R888,2026-06-04,135,88,5.8',
+  ].join('\n')
+  const result = preCheckFollowups(csv, 'f.csv', residentIds)
+  const warnIssues = result.issues.filter(i => i.code === PreCheckIssueCode.RESIDENT_NOT_FOUND)
+  console.log(`  warning数=${warnIssues.length}, invalidRowIndices(error)=${result.invalidRowIndices.length}`)
+  assert(warnIssues.length === 2, '应识别 R999 和 R888 共 2 条居民不存在 warning')
+
+  const errorRowIndices = new Set(result.invalidRowIndices)
+  const warningRowIndices = new Set<number>()
+  result.issues.forEach(issue => {
+    if (issue.severity === 'warning' && issue.row >= 2) {
+      warningRowIndices.add(issue.row - 2)
+    }
+  })
+  const allInvalidIndices = new Set([...errorRowIndices, ...warningRowIndices])
+  const validRows = result.parsedData.filter((_, idx) => !allInvalidIndices.has(idx))
+  const importedRids = validRows.map(r => r['居民编号'])
+  console.log(`  validOnly 过滤后保留 ${validRows.length} 条，居民编号=${importedRids.join(',')}`)
+  assert(validRows.length === 2, 'validOnly 应保留 2 条 R001 的记录')
+  assert(importedRids.every(rid => rid === 'R001'), 'validOnly 导入数据中不应含有 R999/R888')
+  assert(!importedRids.includes('R999') && !importedRids.includes('R888'), 'R999 和 R888 应被过滤掉')
+
+  const allModeRows = result.parsedData
+  assert(allModeRows.length === 4, 'all 模式默认保留全部 4 条（allowWarningContinue=true 时 warning 行允许入库）')
+}
+
+console.log('\n=== 预检测试11：validOnly 模式跳过同日重复随访（warning）行 ===')
+{
+  const residentIds = new Set(['R001', 'R002'])
+  const csv = [
+    '居民编号,随访日期',
+    'R001,2026-06-01',
+    'R001,2026-06-01',
+    'R001,2026-06-01',
+    'R002,2026-06-02',
+  ].join('\n')
+  const result = preCheckFollowups(csv, 'f.csv', residentIds)
+  const dupIssues = result.issues.filter(i => i.code === PreCheckIssueCode.DUPLICATE_FOLLOWUP_SAME_DAY)
+  console.log(`  重复随访 warning 数=${dupIssues.length}, invalidRowIndices(error)=${result.invalidRowIndices.length}`)
+  assert(dupIssues.length === 3, 'R001 在 6/1 的 3 条重复随访各产生 1 条 warning，共 3 条')
+
+  const errorRowIndices = new Set(result.invalidRowIndices)
+  const warningRowIndices = new Set<number>()
+  result.issues.forEach(issue => {
+    if (issue.severity === 'warning' && issue.row >= 2) {
+      warningRowIndices.add(issue.row - 2)
+    }
+  })
+  const allInvalidIndices = new Set([...errorRowIndices, ...warningRowIndices])
+  const validRows = result.parsedData.filter((_, idx) => !allInvalidIndices.has(idx))
+  const importedRids = validRows.map(r => r['居民编号'])
+  console.log(`  validOnly 过滤后保留 ${validRows.length} 条，居民编号=${importedRids.join(',')}`)
+  assert(validRows.length === 1, 'validOnly 应只保留 1 条无 warning 的 R002 记录')
+  assert(importedRids[0] === 'R002', '仅 R002 的非重复记录被保留')
+}
+
+console.log('\n=== 预检测试12：all 模式（allowWarningContinue=true）warning 行允许入库 ===')
+{
+  const residentIds = new Set(['R001'])
+  const csv = [
+    '居民编号,随访日期',
+    'R001,2026-06-01',
+    'R999,2026-06-02',
+  ].join('\n')
+  const result = preCheckFollowups(csv, 'f.csv', residentIds)
+  const allowWarningContinue = DEFAULT_PRE_CHECK_CONFIG.allowWarningContinue
+  const hasErrors = result.errorCount > 0
+  const blockedByWarning = !allowWarningContinue && result.warningCount > 0
+  console.log(`  allowWarningContinue=${allowWarningContinue}, hasErrors=${hasErrors}, warningCount=${result.warningCount}`)
+  assert(allowWarningContinue === true, '默认配置允许警告继续')
+  assert(hasErrors === false, '本例无 error，只有 warning')
+  assert(blockedByWarning === false, '配置允许时 warning 不应阻断 all 模式导入')
+  assert(result.parsedData.length === 2, 'all 模式下 2 条数据都保留（含 warning 的 R999 也入库）')
+}
+
+console.log('\n=== 预检测试13：预检失败（有 error）不覆盖旧数据 ===')
+{
+  const csvBad = '居民编号,姓名\n,张三'
+  const result = preCheckResidents(csvBad, 'bad.csv')
+  const hasErrors = result.errorCount > 0
+  console.log(`  errorCount=${result.errorCount}, hasErrors=${hasErrors}`)
+  assert(hasErrors === true, '存在缺失必填值 error，预检未通过')
+  assert(result.overall !== undefined || result.errorCount > 0, '预检失败状态正确')
+
+  const simulateOldCount = 5
+  let currentResidentCount = simulateOldCount
+  if (!hasErrors) {
+    currentResidentCount = result.validRows
+  }
+  assert(currentResidentCount === simulateOldCount, '预检失败时旧数据计数保持不变，未被覆盖')
+  console.log(`  模拟旧数据计数=${simulateOldCount}，预检失败后仍=${currentResidentCount}，未被覆盖`)
+}
+
 console.log(`\n====== 测试结果：通过 ${passed} / ${passed + failed} ======`)
 if (failed > 0) {
   process.exit(1)

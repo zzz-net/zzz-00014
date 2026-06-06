@@ -278,8 +278,18 @@ export const useAppStore = create<AppState>()(
         }
 
         let rows = typeResult.parsedData
+        let skippedCount = 0
         if (mode === 'validOnly') {
-          rows = rows.filter((_, idx) => !typeResult.invalidRowIndices.includes(idx))
+          const errorRowIndices = new Set(typeResult.invalidRowIndices)
+          const warningRowIndices = new Set<number>()
+          typeResult.issues.forEach(issue => {
+            if (issue.severity === 'warning' && issue.row >= 2) {
+              warningRowIndices.add(issue.row - 2)
+            }
+          })
+          const allInvalidIndices = new Set([...errorRowIndices, ...warningRowIndices])
+          skippedCount = allInvalidIndices.size
+          rows = rows.filter((_, idx) => !allInvalidIndices.has(idx))
         }
 
         if (rows.length === 0) {
@@ -306,7 +316,7 @@ export const useAppStore = create<AppState>()(
               [type]: {
                 success: true,
                 isDuplicate: false,
-                message: `成功导入 ${data.length} 条记录${mode === 'validOnly' ? `（跳过${typeResult.invalidRowIndices.length}行无效数据）` : ''}`,
+                message: `成功导入 ${data.length} 条记录${mode === 'validOnly' ? `（跳过${skippedCount}行无效/警告数据）` : ''}`,
                 errors: [],
                 importedCount: data.length,
               },
